@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & AUTHORS
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build !ios && !js
+//go:build !js
 
 package magicsock
 
@@ -34,7 +34,7 @@ var (
 	// verbosely about idle measurements.
 	debugReSTUNStopOnIdle = envknob.RegisterBool("TS_DEBUG_RESTUN_STOP_ON_IDLE")
 	// debugAlwaysDERP disables the use of UDP, forcing all peer communication over DERP.
-	debugAlwaysDERP = envknob.RegisterBool("TS_DEBUG_ALWAYS_USE_DERP")
+	debugAlwaysDERP = envknob.RegisterBoolWithLookUpPerCall("TS_DEBUG_ALWAYS_USE_DERP") // __CYLONIX_MOD__
 	// debugDERPAddr sets the derp address manually, overriding the DERP map from control.
 	debugUseDERPAddr = envknob.RegisterString("TS_DEBUG_USE_DERP_ADDR")
 	// debugDERPUseHTTP tells clients to connect to DERP via HTTP on port 3340 instead of

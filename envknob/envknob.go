@@ -90,6 +90,7 @@ func LogCurrent(logf logf) {
 // Register functions. All Setenv calls are meant to happen early in main before
 // any goroutines are started.
 func Setenv(envVar, val string) {
+	log.Printf("envknob: set %s=%q", envVar, val)
 	mu.Lock()
 	defer mu.Unlock()
 	os.Setenv(envVar, val)
@@ -152,6 +153,32 @@ func RegisterBool(envVar string) func() bool {
 	}
 	return func() bool { return *p }
 }
+
+// __BEGIN_CYLONIX_MOD__
+// RegisterBoolLookUp returns a func that gets the named environment variable,
+// WITH a map lookup per call. This is useful for cases where the value may be
+// set by a different process, and we want to check the current value each time.
+// It assumes that mutations happen via envknob.Setenv.
+// Use only when it is not in the packet path and performance is not critical.
+func RegisterBoolWithLookUpPerCall(envVar string) func() bool {
+	RegisterBool(envVar)
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if p, ok := regBool[envVar]; ok {
+			if envVar == "TS_DEBUG_ALWAYS_USE_DERP" {
+				log.Printf("envknob: %s=%v", envVar, *p)
+			}
+			return *p
+		}
+		if envVar == "TS_DEBUG_ALWAYS_USE_DERP" {
+			log.Printf("envknob: %s=%v", envVar, false)
+		}
+		return false
+	}
+}
+
+// __END_CYLONIX_MOD__
 
 // RegisterOptBool returns a func that gets the named environment variable,
 // without a map lookup per call. It assumes that mutations happen via
@@ -219,6 +246,7 @@ func setBoolLocked(p *bool, envVar, val string) {
 	if err != nil {
 		log.Fatalf("invalid boolean environment variable %s value %q", envVar, val)
 	}
+	log.Printf("envknob: set %s=%v", envVar, *p)
 }
 
 // +checklocks:mu

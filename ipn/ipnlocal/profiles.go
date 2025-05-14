@@ -424,6 +424,7 @@ func (pm *profileManager) profilePrefs(p *ipn.LoginProfile) (ipn.PrefsView, erro
 // If the profile does not exist, it returns an [errProfileNotFound].
 func (pm *profileManager) SwitchProfile(id ipn.ProfileID) error {
 	metricSwitchProfile.Add(1)
+	pm.logf("\n\n\nswitching to profile %q\n\n\n", id)
 
 	kp, ok := pm.knownProfiles[id]
 	if !ok {
@@ -440,6 +441,7 @@ func (pm *profileManager) SwitchProfile(id ipn.ProfileID) error {
 	if err != nil {
 		return err
 	}
+	pm.logf("\n\n\nswitched to profile %q: %v\n\n\n", id, prefs.Pretty())
 	pm.prefs = prefs
 	pm.updateHealth()
 	pm.currentProfile = kp
@@ -731,12 +733,12 @@ func newProfileManagerWithGOOS(store ipn.StateStore, logf logger.Logf, ht *healt
 	logf = logger.WithPrefix(logf, "pm: ")
 	stateKey, err := readAutoStartKey(store, goos)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read auto start key: %w", err)
 	}
 
 	knownProfiles, err := readKnownProfiles(store)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read know profiles: %w", err)
 	}
 
 	pm := &profileManager{
@@ -763,10 +765,10 @@ func newProfileManagerWithGOOS(store ipn.StateStore, logf logger.Logf, ht *healt
 		}
 		prefs, err := pm.loadSavedPrefs(stateKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load saved prefs: %w", err)
 		}
 		if err := pm.setProfilePrefsNoPermCheck(pm.currentProfile, prefs); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to set profles: %w", err)
 		}
 		// Most platform behavior is controlled by the goos parameter, however
 		// some behavior is implied by build tag and fails when run on Windows,
@@ -779,7 +781,7 @@ func newProfileManagerWithGOOS(store ipn.StateStore, logf logger.Logf, ht *healt
 		// No known profiles, try a migration.
 		pm.dlogf("no known profiles; trying to migrate from legacy prefs")
 		if _, err := pm.migrateFromLegacyPrefs(pm.currentUserID, true); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to migrate legacy profs: %w", err)
 		}
 	} else {
 		pm.NewProfile()

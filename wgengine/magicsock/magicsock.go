@@ -2643,9 +2643,11 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
 	}
 
 	if debugAlwaysDERP() {
-		c.logf("disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
+		c.logf("magicsock: bindSocket: disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
 		ruc.setConnLocked(newBlockForeverConn(), "", c.bind.BatchSize())
 		return nil
+	} else {
+		c.logf("magicsock: bindSocket: enabled %v since TS_DEBUG_ALWAYS_USE_DERP is false", network)
 	}
 
 	// Build a list of preferred ports.

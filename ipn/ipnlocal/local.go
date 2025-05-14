@@ -1735,8 +1735,15 @@ var preferencePolicies = []preferencePolicyInfo{
 // configured by the system administrator in an OS-specific way.
 func applySysPolicy(prefs *ipn.Prefs, lastSuggestedExitNode tailcfg.StableNodeID) (anyChange bool) {
 	if controlURL, err := syspolicy.GetString(syspolicy.ControlURL, prefs.ControlURL); err == nil && prefs.ControlURL != controlURL {
-		prefs.ControlURL = controlURL
-		anyChange = true
+		// __BEGIN_CYLONIX_MOD__
+		// Allow change of the control URL for now if it is not explicitly
+		// set in the policy. i.e. Treat the default "" as unset.
+		log.Printf("Cylonix: controlURL policy set to '%q'", controlURL)
+		if controlURL != "" {
+			prefs.ControlURL = controlURL
+			anyChange = true
+		}
+		// __END_CYLONIX_MOD__
 	}
 
 	const sentinel = "HostnameDefaultValue"
@@ -2240,10 +2247,12 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 			return fmt.Errorf("initMachineKeyLocked: %w", err)
 		}
 	}
+	b.logf("Start: prefs=%v", prefs.Pretty())
 
 	loggedOut := prefs.LoggedOut()
 
 	serverURL := prefs.ControlURLOrDefault()
+	b.logf("Start: serverURL=%q", serverURL)
 	if inServerMode := prefs.ForceDaemon(); inServerMode || runtime.GOOS == "windows" {
 		b.logf("Start: serverMode=%v", inServerMode)
 	}
@@ -6270,6 +6279,19 @@ func (b *LocalBackend) WaitingFiles() ([]apitype.WaitingFile, error) {
 	return mayDeref(apiSrv).taildrop.WaitingFiles()
 }
 
+// __BEGIN_CYLONIX_MOD__
+// WaitingFilesDir returns the directory where waiting files are stored.
+func (b *LocalBackend) WaitingFilesDir() string {
+	b.mu.Lock()
+	apiSrv := b.peerAPIServer
+	b.mu.Unlock()
+	if apiSrv == nil || apiSrv.taildrop == nil {
+		return ""
+	}
+	return apiSrv.taildrop.Dir()
+}
+// __END_CYLONIX_MOD__
+
 // AwaitWaitingFiles is like WaitingFiles but blocks while ctx is not done,
 // waiting for any files to be available.
 //
@@ -7010,10 +7032,12 @@ func (b *LocalBackend) SwitchProfile(profile ipn.ProfileID) error {
 	if err := b.pm.SwitchProfile(profile); err != nil {
 		return err
 	}
+	b.logf("SwitchProfile: switched to profile %q", profile)
 
 	// As an optimization, only reset the dialPlan if the control URL
 	// changed; we treat an empty URL as "unknown" and always reset.
 	newControlURL := b.pm.CurrentPrefs().ControlURLOrDefault()
+	b.logf("SwitchProfile: oldControlURL=%q newControlURL=%q", oldControlURL, newControlURL)
 	if oldControlURL != newControlURL || oldControlURL == "" || newControlURL == "" {
 		b.resetDialPlan()
 	}

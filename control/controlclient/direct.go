@@ -527,7 +527,7 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 		}
 	}
 
-	c.logf("doLogin(regen=%v, hasUrl=%v)", regen, opt.URL != "")
+	c.logf("doLogin(regen=%v, hasUrl=%v hasAuthKey=%v)", regen, opt.URL != "", authKey != "")
 	if serverKey.IsZero() {
 		keys, err := loadServerPubKeys(ctx, c.httpc, c.serverURL)
 		if err != nil && c.interceptedDial != nil && c.interceptedDial.Load() {
