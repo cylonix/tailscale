@@ -751,7 +751,7 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		case taildrop.ErrNoTaildrop:
 			http.Error(w, err.Error(), http.StatusForbidden)
 		case taildrop.ErrInvalidFileName:
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error() + ": " + baseName, http.StatusBadRequest) // __CYLONIX_MOD__
 		case taildrop.ErrFileExists:
 			http.Error(w, err.Error(), http.StatusConflict)
 		default:
