@@ -43,7 +43,7 @@ func DefaultTailscaledSocket() string {
 		return "/tmp/tailscale/tailscaled.sock"
 	}
 	if fi, err := os.Stat("/var/run"); err == nil && fi.IsDir() {
-		return "/var/run/tailscale/tailscaled.sock"
+		return "/var/run/cylonix/cylonixd.sock" // __CYLONIX_MOD__
 	}
 	return "tailscaled.sock"
 }
