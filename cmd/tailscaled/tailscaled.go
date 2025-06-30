@@ -314,6 +314,11 @@ func ipnServerOpts() (o serverOptions) {
 		if dir := filepath.Dir(args.statepath); strings.EqualFold(filepath.Base(dir), "tailscale") {
 			o.VarRoot = dir
 		}
+		// __BEGIN CYLONIX_MOD__
+		if dir := filepath.Dir(args.statepath); strings.EqualFold(filepath.Base(dir), "cylonix") {
+			o.VarRoot = dir
+		}
+		// __END CYLONIX_MOD__
 	}
 	if strings.HasPrefix(statePathOrDefault(), "mem:") {
 		// Register as an ephemeral node.
@@ -925,3 +930,27 @@ func applyIntegrationTestEnvKnob() {
 		}
 	}
 }
+
+// __BEGIN_CYLONIX_MOD__ - Extract and parse flag arguments
+func parseFlags(flagArgs []string) error {
+	if len(flagArgs) <= 0 {
+		return nil
+	}
+	// Temporarily replace os.Args with just the program name + flags
+    savedArgs := os.Args
+    os.Args = append([]string{os.Args[0]}, flagArgs...)
+
+    // Re-parse using the global flags
+    flag.CommandLine.Parse(flagArgs)
+
+    // Restore os.Args
+    os.Args = savedArgs
+
+    log.Printf("Subprocess re-parsed %d flags: %v", len(flagArgs), flagArgs)
+    log.Printf("Active config: port=%d, tun=%s, socket=%s",
+        args.port, args.tunname, args.socketpath)
+
+	return nil
+}
+
+// __END_CYLONIX_MOD__

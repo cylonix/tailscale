@@ -1295,6 +1295,7 @@ func (h *Handler) serveWatchIPNBus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
+	h.logf("watch-ipn-bus: starting watch with mask %d", mask)
 	h.b.WatchNotificationsAs(ctx, h.Actor, mask, f.Flush, func(roNotify *ipn.Notify) (keepGoing bool) {
 		err := enc.Encode(roNotify)
 		if err != nil {
@@ -1851,7 +1852,12 @@ func (h *Handler) singleFilePut(
 		fail()
 		return false
 	}
-	outReq.ContentLength = outgoingFile.DeclaredSize
+	// __BEGIN_CYLONIX_MOD__
+	// Don't set the content length as the declared size may be smaller due to a live
+	// file e.g. a log file.
+	//outReq.ContentLength = outgoingFile.DeclaredSize
+	outReq.ContentLength = -1 // don't set content length, as we may be resuming a file and the size is unknown
+	// __END_CYLONIX_MOD__
 	if offset > 0 {
 		h.logf("resuming put at offset %d after %v", offset, resumeDuration)
 		rangeHdr, _ := httphdr.FormatRange([]httphdr.Range{{Start: offset, Length: 0}})
