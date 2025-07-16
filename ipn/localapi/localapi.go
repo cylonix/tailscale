@@ -1293,6 +1293,7 @@ func (h *Handler) serveWatchIPNBus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Transfer-Encoding", "identity") // __CYLONIX_MOD__
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
 	h.logf("watch-ipn-bus: starting watch with mask %d", mask)
