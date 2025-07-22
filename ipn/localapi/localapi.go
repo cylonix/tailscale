@@ -1495,6 +1495,14 @@ func (h *Handler) serveFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ctx := r.Context()
+		// __BEGIN CYLONIX_MOD__
+		if s := r.FormValue("outgoing"); s != "" {
+			ofs := h.b.OutgoingFiles()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ofs)
+			return
+		}
+		// __END_CYLONIX_MOD__
 		if s := r.FormValue("waitsec"); s != "" && s != "0" {
 			d, err := strconv.Atoi(s)
 			if err != nil {
