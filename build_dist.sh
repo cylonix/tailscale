@@ -28,7 +28,7 @@ EOF
 	exit 0
 fi
 
-tags="$BUILD_TAGS"
+tags="${BUILD_TAGS:-}"
 echo "Using build tags: $tags"
 ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/version.shortStamp=${VERSION_SHORT}"
 
