@@ -455,6 +455,8 @@ func isTailscaleInterface(name string, ips []netip.Prefix) bool {
 		return true
 	}
 	return name == "Tailscale" || // as it is on Windows
+		name == "Cylonix" || // cylonix windows __CYLONIX_MOD__
+		strings.HasPrefix(name, "cylonix") || // cylonix linux __CYLONIX_MOD__
 		strings.HasPrefix(name, "tailscale") // TODO: use --tun flag value, etc; see TODO in method doc
 }
 

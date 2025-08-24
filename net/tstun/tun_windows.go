@@ -10,8 +10,8 @@ import (
 )
 
 func init() {
-	tun.WintunTunnelType = "Tailscale"
-	guid, err := windows.GUIDFromString("{37217669-42da-4657-a55b-0d995d328250}")
+	tun.WintunTunnelType = "Cylonix"                                              // __CYLONIX_MOD__
+	guid, err := windows.GUIDFromString("{51b7cfa4-ef76-4e70-bac7-9aac267ae5c9}") // __CYLONIX_MOD__
 	if err != nil {
 		panic(err)
 	}

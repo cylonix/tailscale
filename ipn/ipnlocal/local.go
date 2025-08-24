@@ -3997,6 +3997,7 @@ func (b *LocalBackend) EditPrefs(mp *ipn.MaskedPrefs) (ipn.PrefsView, error) {
 	if mp.SetsInternal() {
 		return ipn.PrefsView{}, errors.New("can't set Internal fields")
 	}
+	b.logf("Editprefs: %v", mp.Pretty())
 
 	// Zeroing the ExitNodeId via localAPI must also zero the prior exit node.
 	if mp.ExitNodeIDSet && mp.ExitNodeID == "" {
@@ -6340,6 +6341,15 @@ func (b *LocalBackend) OpenFile(name string) (rc io.ReadCloser, size int64, err 
 	b.mu.Unlock()
 	return mayDeref(apiSrv).taildrop.OpenFile(name)
 }
+
+// __BEGIN_CYLONIX_MOD__
+func (b *LocalBackend) GetFilePath(name string) (string, error) {
+	b.mu.Lock()
+	apiSrv := b.peerAPIServer
+	b.mu.Unlock()
+	return mayDeref(apiSrv).taildrop.GetFilePath(name)
+}
+// __END_CYLONIX_MOD__
 
 // hasCapFileSharing reports whether the current node has the file
 // sharing capability enabled.

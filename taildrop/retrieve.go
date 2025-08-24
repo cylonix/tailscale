@@ -176,3 +176,22 @@ func (m *Manager) OpenFile(baseName string) (rc io.ReadCloser, size int64, err e
 	}
 	return f, fi.Size(), nil
 }
+
+// __BEGIN_CYLONIX_MOD__
+func (m *Manager) GetFilePath(baseName string) (path string, err error) {
+	if m == nil || m.opts.Dir == "" {
+		return "", ErrNoTaildrop
+	}
+	if m.opts.DirectFileMode {
+		return "", errors.New("get file path not allowed in direct mode")
+	}
+	path, err = joinDir(m.opts.Dir, baseName)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path + deletedSuffix); err == nil {
+		return "", redactError(&fs.PathError{Op: "get file path", Path: path, Err: fs.ErrNotExist})
+	}
+	return path, nil
+} 
+// __END_CYLONIX_MOD__

@@ -26,6 +26,7 @@ import (
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/netmon"
+	"tailscale.com/paths"
 	"tailscale.com/types/logger"
 )
 
@@ -291,28 +292,30 @@ func (ft *firewallTweaker) doAsyncSet() {
 // Must only be invoked from doAsyncSet.
 func (ft *firewallTweaker) doSet(local []string, killswitch bool, clear bool, procRule bool, allowedRoutes []netip.Prefix) error {
 	if clear {
-		ft.logf("clearing Tailscale-In firewall rules...")
+		ruleName := getFirewallRulename("In")
+		ft.logf("clearing %v firewall rules...", ruleName) // __CYLONIX_MOD__
 		// We ignore the error here, because netsh returns an error for
 		// deleting something that doesn't match.
 		// TODO(bradfitz): care? That'd involve querying it before/after to see
 		// whether it was necessary/worked. But the output format is localized,
 		// so can't rely on parsing English. Maybe need to use OLE, not netsh.exe?
-		d, _ := ft.runFirewall("delete", "rule", "name=Tailscale-In", "dir=in")
-		ft.logf("cleared Tailscale-In firewall rules in %v", d)
+		d, _ := ft.runFirewall("delete", "rule", "name="+ruleName, "dir=in")
+		ft.logf("cleared %v firewall rules in %v", ruleName, d) // __CYLONIX_MOD__
 	}
 	if procRule {
-		ft.logf("deleting any prior Tailscale-Process rule...")
-		d, err := ft.runFirewall("delete", "rule", "name=Tailscale-Process", "dir=in") // best effort
+		ruleName := getFirewallRulename("Process")
+		ft.logf("deleting any prior %v rule...", ruleName)                     // __CYLONIX_MOD__
+		d, err := ft.runFirewall("delete", "rule", "name="+ruleName, "dir=in") // best effort __CYLONIX_MOD__
 		if err == nil {
-			ft.logf("removed old Tailscale-Process rule in %v", d)
+			ft.logf("removed old %v rule in %v", ruleName, d)
 		}
 		var exe string
 		exe, err = os.Executable()
 		if err != nil {
-			ft.logf("failed to find Executable for Tailscale-Process rule: %v", err)
+			ft.logf("failed to find Executable for %v rule: %v", ruleName, err)
 		} else {
-			ft.logf("adding Tailscale-Process rule to allow UDP for %q ...", exe)
-			d, err = ft.runFirewall("add", "rule", "name=Tailscale-Process",
+			ft.logf("adding %v rule to allow UDP for %q ...", ruleName, exe)
+			d, err = ft.runFirewall("add", "rule", "name="+ruleName,
 				"dir=in",
 				"action=allow",
 				"edge=yes",
@@ -322,24 +325,25 @@ func (ft *firewallTweaker) doSet(local []string, killswitch bool, clear bool, pr
 				"enable=yes",
 			)
 			if err != nil {
-				ft.logf("error adding Tailscale-Process rule: %v", err)
+				ft.logf("error adding %v rule: %v", ruleName, err)
 			} else {
 				ft.mu.Lock()
 				ft.didProcRule = true
 				ft.mu.Unlock()
-				ft.logf("added Tailscale-Process rule in %v", d)
+				ft.logf("added %v rule in %v", ruleName, d)
 			}
 		}
 	}
+	ruleName := getFirewallRulename("In")
 	for _, cidr := range local {
-		ft.logf("adding Tailscale-In rule to allow %v ...", cidr)
+		ft.logf("adding %v rule to allow %v ...", ruleName, cidr)
 		var d time.Duration
-		d, err := ft.runFirewall("add", "rule", "name=Tailscale-In", "dir=in", "action=allow", "localip="+cidr, "profile=private,domain", "enable=yes")
+		d, err := ft.runFirewall("add", "rule", "name="+ruleName, "dir=in", "action=allow", "localip="+cidr, "profile=private,domain", "enable=yes")
 		if err != nil {
-			ft.logf("error adding Tailscale-In rule to allow %v: %v", cidr, err)
+			ft.logf("error adding %v rule to allow %v: %v", ruleName, cidr, err)
 			return err
 		}
-		ft.logf("added Tailscale-In rule to allow %v in %v", cidr, d)
+		ft.logf("added %v rule to allow %v in %v", ruleName, cidr, d)
 	}
 
 	if !killswitch {
@@ -398,3 +402,11 @@ func (ft *firewallTweaker) doSet(local []string, killswitch bool, clear bool, pr
 	// in via stdin encoded in json.
 	return ft.fwProcEncoder.Encode(allowedRoutes)
 }
+
+// __BEGIN CYLONIX_MOD__
+func getFirewallRulename(suffix string) string {
+	_, programName := paths.GetWindowsProgramName()
+	return programName + "-" + suffix
+}
+
+// __END CYLONIX_MOD__

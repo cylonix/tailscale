@@ -206,6 +206,16 @@ func LogsDir(logf logger.Logf) string {
 
 	switch runtime.GOOS {
 	case "windows":
+		// __BEGIN_CYLONIX_MOD__
+		{
+			_, programName := paths.GetWindowsProgramName()
+			dir := filepath.Join(os.Getenv("ProgramData"), programName)
+			if winProgramDataAccessible(dir) {
+				logf("logpolicy: using dir %v", dir)
+				return dir
+			}
+		}
+		// __END_CYLONIX_MOD__
 		if version.CmdName() == "tailscaled" {
 			// In the common case, when tailscaled is run as the Local System (as a service),
 			// we want to use %ProgramData% (C:\ProgramData\Tailscale), aside the
@@ -643,14 +653,25 @@ func (opts Options) New() *Policy {
 
 	var logOutput io.Writer = lw
 
+	// __BEGIN CYLONIX_MOD__
 	if runtime.GOOS == "windows" && conf.Collection == logtail.CollectionNode {
 		logID := newc.PublicID.String()
 		exe, _ := os.Executable()
 		if strings.EqualFold(filepath.Base(exe), "tailscaled.exe") {
-			diskLogf := filelogger.New("tailscale-service", logID, lw.Logf)
+			diskLogf := filelogger.New("tailscale-service", "Tailscale", logID, lw.Logf)
+			logOutput = logger.FuncWriter(diskLogf)
+		} else {
+			name, capitalized := paths.GetWindowsProgramName()
+			diskLogf := filelogger.New(name+"-service", capitalized, logID, lw.Logf)
 			logOutput = logger.FuncWriter(diskLogf)
 		}
+	} else if runtime.GOOS == "windows" {
+		logID := newc.PublicID.String()
+		name, capitalized := paths.GetWindowsProgramName()
+		diskLogf := filelogger.New(name+"-service", capitalized, logID, lw.Logf)
+		logOutput = logger.FuncWriter(diskLogf)
 	}
+	// __END CYLONIX_MOD__
 
 	if useStdLogger {
 		log.SetFlags(0) // other log flags are set on console, not here

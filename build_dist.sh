@@ -28,7 +28,8 @@ EOF
 	exit 0
 fi
 
-tags=""
+tags="${BUILD_TAGS:-}"
+echo "Using build tags: $tags"
 ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/version.shortStamp=${VERSION_SHORT}"
 
 # build_dist.sh arguments must precede go build arguments.

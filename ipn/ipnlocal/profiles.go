@@ -633,7 +633,29 @@ func (pm *profileManager) NewProfileForUser(uid ipn.WindowsUserID) {
 
 	metricNewProfile.Add(1)
 
+	// __BEGIN_CYLONIX_MOD__
+	currentOpUser := ""
+	if pm.prefs.Valid() {
+		currentOpUser = pm.prefs.OperatorUser()
+		pm.logf("current operator user: %q", currentOpUser)
+	}
+	// __END_CYLONIX_MOD__
+
 	pm.prefs = defaultPrefs
+
+	// __BEGIN_CYLONIX_MOD__
+	// Need to inherit the current operator user so that GUI can continue
+	// to access the local clients as provisioned by the operator.
+	pm.logf("setting operator user to %q for new profile linux=%v", currentOpUser, pm.goos == "linux")
+	if pm.goos == "linux" && currentOpUser != "" {
+		pm.logf("set operator user to %q for new profile", currentOpUser)
+		prefs := pm.prefs.AsStruct()
+		prefs.OperatorUser = currentOpUser
+		pm.prefs = prefs.View()
+		pm.logf("currnt prefs: %v", pm.prefs.Pretty())
+	}
+	// __END_CYLONIX_MOD__
+
 	pm.updateHealth()
 	pm.currentProfile = &ipn.LoginProfile{LocalUserID: uid}
 }

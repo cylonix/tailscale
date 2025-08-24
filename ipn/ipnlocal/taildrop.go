@@ -33,3 +33,16 @@ func (b *LocalBackend) UpdateOutgoingFiles(updates map[string]*ipn.OutgoingFile)
 	})
 	b.send(ipn.Notify{OutgoingFiles: outgoingFiles})
 }
+
+// __BEGIN_CYLONIX_MOD__
+func (b *LocalBackend) OutgoingFiles() []*ipn.OutgoingFile {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var outgoingFiles []*ipn.OutgoingFile
+	for _, file := range b.outgoingFiles {
+		outgoingFiles = append(outgoingFiles, file)
+	}
+	return outgoingFiles
+}
+
+// __END_CYLONIX_MOD__

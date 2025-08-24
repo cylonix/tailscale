@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"mime"
 	"mime/multipart"
@@ -105,10 +106,12 @@ var handler = map[string]LocalAPIHandler{
 	"dns-query":                   (*Handler).serveDNSQuery,
 	"drive/fileserver-address":    (*Handler).serveDriveServerAddr,
 	"drive/shares":                (*Handler).serveShares,
+	"envknob":                     (*Handler).serveEnvknob, // __CYLONIX_MOD__
 	"file-targets":                (*Handler).serveFileTargets,
 	"goroutines":                  (*Handler).serveGoroutines,
 	"handle-push-message":         (*Handler).serveHandlePushMessage,
 	"id-token":                    (*Handler).serveIDToken,
+	"log":                         (*Handler).serveLog, // __CYLONIX_MOD__
 	"login-interactive":           (*Handler).serveLoginInteractive,
 	"logout":                      (*Handler).serveLogout,
 	"logtap":                      (*Handler).serveLogTap,
@@ -1290,8 +1293,10 @@ func (h *Handler) serveWatchIPNBus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Transfer-Encoding", "identity") // __CYLONIX_MOD__
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
+	h.logf("watch-ipn-bus: starting watch with mask %d", mask)
 	h.b.WatchNotificationsAs(ctx, h.Actor, mask, f.Flush, func(roNotify *ipn.Notify) (keepGoing bool) {
 		err := enc.Encode(roNotify)
 		if err != nil {
@@ -1490,6 +1495,14 @@ func (h *Handler) serveFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ctx := r.Context()
+		// __BEGIN CYLONIX_MOD__
+		if s := r.FormValue("outgoing"); s != "" {
+			ofs := h.b.OutgoingFiles()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ofs)
+			return
+		}
+		// __END_CYLONIX_MOD__
 		if s := r.FormValue("waitsec"); s != "" && s != "0" {
 			d, err := strconv.Atoi(s)
 			if err != nil {
@@ -1848,7 +1861,12 @@ func (h *Handler) singleFilePut(
 		fail()
 		return false
 	}
-	outReq.ContentLength = outgoingFile.DeclaredSize
+	// __BEGIN_CYLONIX_MOD__
+	// Don't set the content length as the declared size may be smaller due to a live
+	// file e.g. a log file.
+	//outReq.ContentLength = outgoingFile.DeclaredSize
+	outReq.ContentLength = -1 // don't set content length, as we may be resuming a file and the size is unknown
+	// __END_CYLONIX_MOD__
 	if offset > 0 {
 		h.logf("resuming put at offset %d after %v", offset, resumeDuration)
 		rangeHdr, _ := httphdr.FormatRange([]httphdr.Range{{Start: offset, Length: 0}})
@@ -3024,3 +3042,121 @@ func (h *Handler) serveSuggestExitNode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
+
+// __BEGIN_CYLONIX_MOD__
+func (h *Handler) serveEnvknob(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitRead {
+		http.Error(w, "envknobs access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.GET && r.Method != httpm.POST {
+		http.Error(w, "use GET or POST", http.StatusMethodNotAllowed)
+		return
+	}
+	env := r.FormValue("env")
+	if env == "" {
+		http.Error(w, "missing 'env' parameter", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == httpm.POST {
+		kvs, err := ParseKeyValue(env)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error parsing arguments: %v", err), http.StatusBadRequest)
+			return
+		}
+		h.logf("Set env knob: %v", kvs)
+		for k, v := range kvs {
+			envknob.Setenv(k, v)
+		}
+		// Some env knobs need follow up actions
+		if v, ok := kvs["TS_DEBUG_ALWAYS_USE_DERP"]; ok {
+			if err := h.onEnvknobSetAlwaysUseRelay(v); err != nil {
+				http.Error(w, fmt.Sprintf("Error setting TS_DEBUG_ALWAYS_USE_DERP: %v", err), http.StatusInternalServerError)
+				return
+			}
+			h.logf("TS_DEBUG_ALWAYS_USE_DERP set to %v", v)
+		}
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+	h.logf("Get env knob: %v", env)
+	w.Header().Set("Content-Type", "application/json")
+	value := os.Getenv(env)
+	json.NewEncoder(w).Encode(map[string]string{
+		"env": value,
+	})
+}
+
+func ParseKeyValue(s string) (map[string]string, error) {
+	result := make(map[string]string)
+
+	// Handle empty string
+	if s == "" {
+		return result, nil
+	}
+
+	// Try JSON first
+	if err := json.Unmarshal([]byte(s), &result); err == nil {
+		return result, nil
+	}
+
+	// Fallback to key=value format
+	pairs := strings.Split(s, ",")
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key-value pair: %s", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		result[key] = value
+	}
+
+	return result, nil
+}
+
+func (h *Handler) onEnvknobSetAlwaysUseRelay(setting string) error {
+	on, err := strconv.ParseBool(setting)
+	if err != nil {
+		return fmt.Errorf("failed to parse setting '%q': %w", setting, err)
+	}
+	if err := h.b.SetDevStateStore(string(ipn.StateKey("_always_use_relay_enabled")), setting); err != nil {
+		return fmt.Errorf("failed to store state: %w", err)
+	}
+	h.logf("Rebinding for alwaysUserRelay(%v)", on)
+	if err := h.b.DebugRebind(); err != nil {
+		return fmt.Errorf("failed to rebind for alwaysUserRelay(%v): %w", on, err)
+	}
+	h.logf("Rebinding DONE. Re-stunning for alwaysUserRelay(%v)", on)
+	if err := h.b.DebugReSTUN(); err != nil {
+		return fmt.Errorf("failed to re-stun for alwaysUserRelay(%v): %w", on, err)
+	}
+	h.logf("Re-stunning DONE for alwaysUserRelay(%v)", on)
+	return nil
+}
+
+func (h *Handler) serveLog(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "log access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	body := io.LimitReader(r.Body, 1024) // 1KB log entry limit.
+	logData, err := io.ReadAll(body)
+	if err != nil {
+		http.Error(w, "reading log data: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(logData) == 0 {
+		http.Error(w, "empty log data", http.StatusBadRequest)
+		return
+	}
+	log.Printf("APP: %q", string(logData))
+	w.WriteHeader(http.StatusOK)
+}
+
+// __END_CYLONIX_MOD__

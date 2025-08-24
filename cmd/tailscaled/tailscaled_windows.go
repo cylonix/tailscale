@@ -95,6 +95,8 @@ const (
 	cmdUninstallWinTun = svc.Cmd(128 + iota)
 )
 
+var originalServiceArgs []string
+
 func init() {
 	tstunNew = tstunNewWithWindowsRetries
 }
@@ -109,6 +111,7 @@ func tstunNewWithWindowsRetries(logf logger.Logf, tunName string) (_ tun.Device,
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	for {
+		log.Printf("tstun.New(%q)", tunName)
 		dev, devName, err := tstun.New(logf, tunName)
 		if err == nil {
 			return dev, devName, err
@@ -160,6 +163,8 @@ func runWindowsService(pol *logpolicy.Policy) error {
 		defer syslog.Close()
 	}
 
+	originalServiceArgs = os.Args[1:] // Store args excluding executable name
+
 	syslogf("Service entering svc.Run")
 	defer syslogf("Service exiting svc.Run")
 	return svc.Run(serviceName, &ipnService{Policy: pol})
@@ -183,7 +188,7 @@ func (service *ipnService) Execute(args []string, r <-chan svc.ChangeRequest, ch
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		args := []string{"/subproc", service.Policy.PublicID.String()}
+		args := append([]string{"/subproc", service.Policy.PublicID.String()}, originalServiceArgs...) // __CYLONIX_MOD__
 		// Make a logger without a date prefix, as filelogger
 		// and logtail both already add their own. All we really want
 		// from the log package is the automatic newline.
@@ -191,6 +196,7 @@ func (service *ipnService) Execute(args []string, r <-chan svc.ChangeRequest, ch
 		// writer that logpolicy already installed as the global
 		// output.
 		logger := log.New(log.Default().Writer(), "", 0)
+		logger.Printf("Service starting: v%v: %#v", version.Long(), args)
 		babysitProc(ctx, args, logger.Printf)
 	}()
 
@@ -287,9 +293,14 @@ func beWindowsSubprocess() bool {
 		return true
 	}
 
-	if len(os.Args) != 3 || os.Args[1] != "/subproc" {
+	// __BEGIN_CYLONIX_MOD__
+	if len(os.Args) < 3 || os.Args[1] != "/subproc" {
 		return false
 	}
+	if len(os.Args) > 3 {
+		parseFlags(os.Args[3:])
+	}
+	// __END_CYLONIX_MOD__
 	logID := os.Args[2]
 
 	// Remove the date/time prefix; the logtail + file loggers add it.
