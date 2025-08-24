@@ -19,6 +19,7 @@ import (
 var defaultProtos = []ipproto.Proto{
 	ipproto.TCP,
 	ipproto.UDP,
+	ipproto.GRE, // __CYLONIX_MOD__
 	ipproto.ICMPv4,
 	ipproto.ICMPv6,
 }
