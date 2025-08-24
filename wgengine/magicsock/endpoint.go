@@ -1690,14 +1690,14 @@ func betterAddr(a, b addrQuality) bool {
 	} else if a.Addr().IsLinkLocalUnicast() {
 		aPoints += 30
 	} else if a.Addr().IsPrivate() {
-		aPoints += 20
+		// aPoints += 20 // __CYLONIX_MOD__ this cause loops if private depends on the mesh
 	}
 	if b.Addr().IsLoopback() {
 		bPoints += 50
 	} else if b.Addr().IsLinkLocalUnicast() {
 		bPoints += 30
 	} else if b.Addr().IsPrivate() {
-		bPoints += 20
+		// bPoints += 20 // __CYLONIX_MOD__ this cause loops if private depends on the mesh
 	}
 
 	// Prefer IPv6 for being a bit more robust, as long as
