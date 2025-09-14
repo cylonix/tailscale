@@ -4035,6 +4035,17 @@ func (b *LocalBackend) editPrefsLockedOnEntry(mp *ipn.MaskedPrefs, unlock unlock
 		return stripKeysFromPrefs(p0), nil
 	}
 	b.logf("EditPrefs: %v", mp.Pretty())
+	// __BEGIN_CYLONIX_ADD__
+	b.logf("EditPrefs: checking exit node change")
+	if p0.ExitNodeID() != p1.ExitNodeID {
+		b.logf("EditPrefs: exit node change %q -> %q", p0.ExitNodeID(), p1.ExitNodeID)
+		if err := b.doSetExitNodeIDLocked(p1, string(p1.ExitNodeID)); err != nil {
+			b.logf("failed to set exit node id")
+			return ipn.PrefsView{}, err
+		}
+		b.logf("EditPrefs: exit node change to host info done")
+	}
+	// __END_CYLONIX_ADD__
 	newPrefs := b.setPrefsLockedOnEntry(p1, unlock)
 
 	// Note: don't perform any actions for the new prefs here. Not
@@ -4353,6 +4364,52 @@ func (b *LocalBackend) doSetHostinfoFilterServices() {
 	hi.PushDeviceToken = b.pushDeviceToken.Load()
 	cc.SetHostinfo(&hi)
 }
+
+// __BEGIN_CYLONIX_ADD__
+// doSetExitNodeIDLocked sends a set exit node ID request to the control server
+// Caller has b.mu locked.
+func (b *LocalBackend) doSetExitNodeIDLocked(prefs *ipn.Prefs, exitNodeID string) error {
+	if !strings.Contains(prefs.ControlURL, "cylonix.io") {
+		// Hardcode to only work with cylonix control servers
+		return nil
+	}
+	cc := b.ccAuto
+	if cc == nil {
+		return errors.New("no client")
+	}
+
+	nodeKey := prefs.Persist.PublicNodeKey().String()
+
+	// Construct URL with path and query parameters
+	baseURL := "https://unused/machine/exit-node"
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse URL: %v", err)
+	}
+
+	q := u.Query()
+	q.Set("node_key", nodeKey)
+	q.Set("exit_node_id", exitNodeID)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodPut, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+	b.logf("Sending exit node ID update to %q", exitNodeID)
+	resp, err := cc.DoNoiseRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+// __END_CYLONIX_ADD__
 
 // NetMap returns the latest cached network map received from
 // controlclient, or nil if no network map was received yet.
