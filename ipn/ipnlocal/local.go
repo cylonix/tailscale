@@ -4037,6 +4037,7 @@ func (b *LocalBackend) editPrefsLockedOnEntry(mp *ipn.MaskedPrefs, unlock unlock
 	b.logf("EditPrefs: %v", mp.Pretty())
 	// __BEGIN_CYLONIX_ADD__
 	b.logf("EditPrefs: checking exit node change")
+	setExitNodeID(p1, b.netMap)
 	if p0.ExitNodeID() != p1.ExitNodeID {
 		b.logf("EditPrefs: exit node change %q -> %q", p0.ExitNodeID(), p1.ExitNodeID)
 		if err := b.doSetExitNodeIDLocked(p1, string(p1.ExitNodeID)); err != nil {
@@ -4786,9 +4787,12 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 	// use those resolvers as the default, otherwise if there are WireGuard exit
 	// node resolvers, use those as the default.
 	if len(nm.DNS.Resolvers) > 0 {
+		logf("using user-set default DNS resolvers(%v): [%v, ...]", len(nm.DNS.Resolvers), nm.DNS.Resolvers[0].Addr) // __CYLONIX_ADD__
+		dcfg.MustAddDefaultResolvers = true // __CYLONIX_ADD__
 		addDefault(nm.DNS.Resolvers)
 	} else {
 		if resolvers, ok := wireguardExitNodeDNSResolvers(nm, peers, prefs.ExitNodeID()); ok {
+			dcfg.MustAddDefaultResolvers = true // __CYLONIX_ADD__
 			addDefault(resolvers)
 		}
 	}
@@ -6795,6 +6799,19 @@ func wireguardExitNodeDNSResolvers(nm *netmap.NetworkMap, peers map[tailcfg.Node
 					}
 					return copies, true
 				}
+				// __BEGIN_CYLONIX_ADD__
+				// Set default DNS resolvers to a list of well-known public DNS servers
+				log.Printf("[cylonix] Using default DNS resolvers for WireGuard-only exit node")
+				return []*dnstype.Resolver{
+					{Addr: "1.1.1.1"},
+					{Addr: "1.0.0.1"},
+					{Addr: "8.8.8.8"},
+					{Addr: "8.8.4.4"},
+					{Addr: "2001:4860:4860::8888"},
+					{Addr: "2001:4860:4860::8844"},
+					{Addr: "223.5.5.5"},
+				}, true
+				// __END_CYLONIX_ADD__
 			}
 			return nil, false
 		}

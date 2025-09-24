@@ -288,6 +288,13 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 		rcfg.Routes = routes
 		rcfg.Routes["."] = cfg.DefaultResolvers
 		ocfg.Nameservers = []netip.Addr{cfg.serviceIP()}
+		// __BEGIN_CYLONIX_ADD__
+		if cfg.MustAddDefaultResolvers {
+			m.logf("forcing use of default dns resolvers(%v) and quad-100", len(cfg.DefaultResolvers))
+			ocfg.Nameservers = toIPsOnly(cfg.DefaultResolvers)
+			ocfg.Nameservers = append(ocfg.Nameservers, cfg.serviceIP())
+		}
+		// __END_CYLONIX_ADD__
 		return rcfg, ocfg, nil
 	}
 

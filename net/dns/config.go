@@ -45,6 +45,11 @@ type Config struct {
 	// OnlyIPv6, if true, uses the IPv6 service IP (for MagicDNS)
 	// instead of the IPv4 version (100.100.100.100).
 	OnlyIPv6 bool
+
+	// __BEGIN_CYLONIX_ADD__
+	// MustAddDefaultResolvers, if true, forces the use of DefaultResolvers
+	MustAddDefaultResolvers bool
+	// __END_CYLONIX_ADD__
 }
 
 func (c *Config) serviceIP() netip.Addr {
