@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
+	"tailscale.com/envknob/featureknob"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/multierr"
@@ -325,10 +326,14 @@ func (i *iptablesRunner) addBase4(tunname string) error {
 	if err := i.ipt4.Append("filter", "ts-input", args...); err != nil {
 		return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
 	}
-	args = []string{"!", "-i", tunname, "-s", tsaddr.CGNATRange().String(), "-j", "DROP"}
-	if err := i.ipt4.Append("filter", "ts-input", args...); err != nil {
-		return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
+	// __BEGIN_CYLONIX_MOD__
+	if dropErr := featureknob.CanSetCGNetInputDropFilter(); dropErr == nil {
+		args = []string{"!", "-i", tunname, "-s", tsaddr.CGNATRange().String(), "-j", "DROP"}
+		if err := i.ipt4.Append("filter", "ts-input", args...); err != nil {
+			return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
+		}
 	}
+	// __END_CYLONIX_MOD__
 
 	// Explicitly allow all other inbound traffic to the tun interface
 	args = []string{"-i", tunname, "-j", "ACCEPT"}

@@ -65,3 +65,14 @@ func CanUseExitNode() error {
 
 	return nil
 }
+
+// __BEGIN_CYLONIX_ADD__
+func CanSetCGNetInputDropFilter() error {
+	if runtime.GOOS == "linux" {
+		if envknob.Bool("MultipleCGNetTunnelsEnabled") {
+			return errors.New("CGNetInputDropFilter cannot be set when MultipleCGNetTunnelsEnabled is true")
+		}
+	}
+	return nil
+}
+// __END_CYLONIX_ADD__
