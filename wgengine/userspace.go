@@ -1581,6 +1581,7 @@ type fwdDNSLinkSelector struct {
 
 func (ls fwdDNSLinkSelector) PickLink(ip netip.Addr) (linkName string) {
 	if ls.ue.isDNSIPOverTailscale.Load()(ip) {
+		ls.ue.logf("wgengine: PickLink: %v is using tun %q", ip, ls.tunName)
 		return ls.tunName
 	}
 	return ""
@@ -1604,3 +1605,18 @@ func (e *userspaceEngine) reconfigureVPNIfNecessary() error {
 	}
 	return e.reconfigureVPN()
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (e *userspaceEngine) ResetDNSClientCache() {
+	e.dns.ResetDNSClientCache()
+}
+
+func (e *userspaceEngine) SetTunnelName(tunName string) {
+	e.logf("wgengine: SetTunnelName(%v)", tunName)
+	e.dns.SetLinkSelector(&fwdDNSLinkSelector{
+		ue:      e,
+		tunName: tunName,
+	})
+}
+
+// __END_CYLONIX_ADD__

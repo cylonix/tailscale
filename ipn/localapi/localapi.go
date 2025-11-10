@@ -86,6 +86,7 @@ var handler = map[string]LocalAPIHandler{
 	// without a trailing slash:
 	"alpha-set-device-attrs":      (*Handler).serveSetDeviceAttrs, // see tailscale/corp#24690
 	"bugreport":                   (*Handler).serveBugReport,
+	"cap":                         (*Handler).serveCap, // __CYLONIX_ADD__
 	"check-ip-forwarding":         (*Handler).serveCheckIPForwarding,
 	"check-prefs":                 (*Handler).serveCheckPrefs,
 	"check-udp-gro-forwarding":    (*Handler).serveCheckUDPGROForwarding,
@@ -106,12 +107,12 @@ var handler = map[string]LocalAPIHandler{
 	"dns-query":                   (*Handler).serveDNSQuery,
 	"drive/fileserver-address":    (*Handler).serveDriveServerAddr,
 	"drive/shares":                (*Handler).serveShares,
-	"envknob":                     (*Handler).serveEnvknob, // __CYLONIX_MOD__
+	"envknob":                     (*Handler).serveEnvknob, // __CYLONIX_ADD__
 	"file-targets":                (*Handler).serveFileTargets,
 	"goroutines":                  (*Handler).serveGoroutines,
 	"handle-push-message":         (*Handler).serveHandlePushMessage,
 	"id-token":                    (*Handler).serveIDToken,
-	"log":                         (*Handler).serveLog, // __CYLONIX_MOD__
+	"log":                         (*Handler).serveLog, // __CYLONIX_ADD__
 	"login-interactive":           (*Handler).serveLoginInteractive,
 	"logout":                      (*Handler).serveLogout,
 	"logtap":                      (*Handler).serveLogTap,
@@ -3077,6 +3078,27 @@ func (h *Handler) serveEnvknob(w http.ResponseWriter, r *http.Request) {
 			}
 			h.logf("TS_DEBUG_ALWAYS_USE_DERP set to %v", v)
 		}
+		if v, ok := kvs["TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL"]; ok {
+			on, err := strconv.ParseBool(v)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error parsing TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if err := h.b.SetDevStateStore(string(ipn.SendDNSToExitNodeInTunnelKey), v); err != nil {
+				http.Error(w, fmt.Sprintf("Error storing TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL state: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			knobs := h.b.ControlKnobs()
+			if knobs == nil {
+				http.Error(w, "Failed to set TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL: nil control knobss", http.StatusInternalServerError)
+				return
+			}
+			knobs.SendDNSToExitNodeInTunnel.Store(on)
+			h.logf("Calling Resetting DNS Client cache")
+			h.b.ResetDNSClientCache()
+			h.logf("SendDNSToExitNodeInTunnel knob is set to %v", on)
+		}
 		w.WriteHeader(http.StatusCreated)
 		return
 	}
@@ -3121,7 +3143,7 @@ func (h *Handler) onEnvknobSetAlwaysUseRelay(setting string) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse setting '%q': %w", setting, err)
 	}
-	if err := h.b.SetDevStateStore(string(ipn.StateKey("_always_use_relay_enabled")), setting); err != nil {
+	if err := h.b.SetDevStateStore(string(ipn.AlwaysUseRelayEnabledKey), setting); err != nil {
 		return fmt.Errorf("failed to store state: %w", err)
 	}
 	h.logf("Rebinding for alwaysUserRelay(%v)", on)
@@ -3156,6 +3178,33 @@ func (h *Handler) serveLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("APP: %q", string(logData))
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) serveCap(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "cap access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	cap := r.FormValue("cap")
+	if cap == "" {
+		http.Error(w, "missing 'cap' parameter", http.StatusBadRequest)
+		return
+	}
+	op := r.FormValue("op")
+	if op == "" {
+		http.Error(w, "missing 'op' parameter", http.StatusBadRequest)
+		return
+	}
+	if err := h.b.AddDelNodeCapability(tailcfg.NodeCapability(cap), op); err != nil {
+		http.Error(w, "Failed to "+op+" '"+cap+"': "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Cap %v '%v' success", op, cap)
 	w.WriteHeader(http.StatusOK)
 }
 

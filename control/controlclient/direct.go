@@ -208,6 +208,13 @@ type NetmapDeltaUpdater interface {
 	UpdateNetmapDelta([]netmap.NodeMutation) (ok bool)
 }
 
+// __BEGIN_CYLONIX_ADD__
+var (
+	ErrNodeUnauthorized = errors.New("node is unauthorized")
+)
+
+// __END_CYLONIX_ADD__
+
 // NewDirect returns a new Direct client.
 func NewDirect(opts Options) (*Direct, error) {
 	if opts.ServerURL == "" {
@@ -528,7 +535,8 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 	}
 
 	c.logf("doLogin(regen=%v, hasUrl=%v hasAuthKey=%v)", regen, opt.URL != "", authKey != "")
-	if serverKey.IsZero() {
+	c.logf("server keys: legacy=%v noise=%v", serverKey.ShortString(), serverNoiseKey.ShortString()) // __CYLONIX_ADD__
+	if serverKey.IsZero() && serverNoiseKey.IsZero() {                                               // __CYLONIX_MOD__
 		keys, err := loadServerPubKeys(ctx, c.httpc, c.serverURL)
 		if err != nil && c.interceptedDial != nil && c.interceptedDial.Load() {
 			c.health.SetUnhealthy(macOSScreenTime, nil)
@@ -843,6 +851,7 @@ func (c *Direct) sendMapRequest(ctx context.Context, isStreaming bool, nu Netmap
 	persist := c.persist
 	serverURL := c.serverURL
 	serverNoiseKey := c.serverNoiseKey
+	authKey, _, _, _ := tka.DecodeWrappedAuthkey(c.authKey, c.logf) // __CYLONIX_ADD__
 	hi := c.hostInfoLocked()
 	backendLogID := hi.BackendLogID
 	var epStrs []string
@@ -973,6 +982,14 @@ func (c *Direct) sendMapRequest(ctx context.Context, isStreaming bool, nu Netmap
 	if res.StatusCode != 200 {
 		msg, _ := io.ReadAll(res.Body)
 		res.Body.Close()
+		// __BEGIN_CYLONIX_ADD__
+		// If we get a 401 and we don't have an auth key, it's
+		// probably because the node was deauthorized.
+		if res.StatusCode == 401 && authKey == "" {
+			c.logf("map request: node appears to be unauthorized (401); no auth key present")
+			return ErrNodeUnauthorized
+		}
+		// __END_CYLONIX_ADD__
 		return fmt.Errorf("initial fetch failed %d: %.200s",
 			res.StatusCode, strings.TrimSpace(string(msg)))
 	}
@@ -1167,7 +1184,12 @@ func decode(res *http.Response, v any) error {
 	if res.StatusCode != 200 {
 		return fmt.Errorf("%d: %v", res.StatusCode, string(msg))
 	}
-	return json.Unmarshal(msg, v)
+	// __BEGIN_CYLONIX_MOD__
+	if err := json.Unmarshal(msg, v); err != nil {
+		return fmt.Errorf("unmarshal: %v msg=%v", err, string(msg))
+	}
+	return nil
+	// __END_CYLONIX_MOD__
 }
 
 var jsonEscapedZero = []byte(`\u0000`)

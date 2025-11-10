@@ -35,6 +35,8 @@ var (
 	debugReSTUNStopOnIdle = envknob.RegisterBool("TS_DEBUG_RESTUN_STOP_ON_IDLE")
 	// debugAlwaysDERP disables the use of UDP, forcing all peer communication over DERP.
 	debugAlwaysDERP = envknob.RegisterBoolWithLookUpPerCall("TS_DEBUG_ALWAYS_USE_DERP") // __CYLONIX_MOD__
+	// debugAlwaysDERPAllowWgOnlyExitNode forces DERP usage except for the wg exit node peer. // __CYLONIX_ADD__
+	debugAlwaysDERPAllowWgOnlyExitNode = func() bool { return true } // __CYLONIX_ADD__
 	// debugDERPAddr sets the derp address manually, overriding the DERP map from control.
 	debugUseDERPAddr = envknob.RegisterString("TS_DEBUG_USE_DERP_ADDR")
 	// debugDERPUseHTTP tells clients to connect to DERP via HTTP on port 3340 instead of

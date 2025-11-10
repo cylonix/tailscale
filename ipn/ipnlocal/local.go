@@ -1440,6 +1440,14 @@ func (b *LocalBackend) SetControlClientStatus(c controlclient.Client, st control
 			s := uerr.UserVisibleError()
 			b.send(ipn.Notify{ErrMessage: &s})
 		}
+		// __BEGIN_CYLONIX_ADD__
+		if errors.Is(st.Err, controlclient.ErrNodeUnauthorized) {
+			// If we get an unauthorized error, we need to go back to the NeedsLogin state
+			// so that the user can re-authenticate.
+			b.logf("Node unauthorized, entering NeedsLogin state")
+			b.enterState(ipn.NeedsLogin)
+		}
+		// __END_CYLONIX_ADD__
 		return
 	}
 
@@ -1570,6 +1578,7 @@ func (b *LocalBackend) SetControlClientStatus(c controlclient.Client, st control
 	if setExitNodeID(prefs, curNetMap) {
 		prefsChanged = true
 	}
+	b.setSendDNSToExitNodeInTunnelLocked() // __CYLONIX_ADD__
 
 	// Until recently, we did not store the account's tailnet name. So check if this is the case,
 	// and backfill it on incoming status update.
@@ -2270,6 +2279,23 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 			b.goTracker.Go(b.readPoller)
 		})
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	v, readErr := b.GetDevStateStore(string(ipn.SendDNSToExitNodeInTunnelKey))
+	if readErr != nil {
+		b.logf("GetDevStateStore error: %v", readErr)
+	} else {
+		sendDNSToExitNodeInTunnel, err := strconv.ParseBool(string(v))
+		if err != nil {
+			b.logf("GetDevStateStore parse error: %v", err)
+		} else {
+			b.sys.ControlKnobs().
+				SendDNSToExitNodeInTunnel.
+				Store(sendDNSToExitNodeInTunnel)
+			b.logf("SendDNSToExitNodeInTunnel set to: %v", sendDNSToExitNodeInTunnel)
+		}
+	}
+	// __END_CYLONIX_ADD__
 
 	discoPublic := b.MagicConn().DiscoPublicKey()
 
@@ -4038,6 +4064,7 @@ func (b *LocalBackend) editPrefsLockedOnEntry(mp *ipn.MaskedPrefs, unlock unlock
 	// __BEGIN_CYLONIX_ADD__
 	b.logf("EditPrefs: checking exit node change")
 	setExitNodeID(p1, b.netMap)
+	b.setSendDNSToExitNodeInTunnelLocked()
 	if p0.ExitNodeID() != p1.ExitNodeID {
 		b.logf("EditPrefs: exit node change %q -> %q", p0.ExitNodeID(), p1.ExitNodeID)
 		if err := b.doSetExitNodeIDLocked(p1, string(p1.ExitNodeID)); err != nil {
@@ -4113,6 +4140,7 @@ func (b *LocalBackend) setPrefsLockedOnEntry(newp *ipn.Prefs, unlock unlockOnce)
 	applySysPolicy(newp, b.lastSuggestedExitNode)
 	// setExitNodeID does likewise. No-op if no exit node resolution is needed.
 	setExitNodeID(newp, netMap)
+	b.setSendDNSToExitNodeInTunnelLocked() // __CYLONIX_ADD__
 	// We do this to avoid holding the lock while doing everything else.
 
 	oldHi := b.hostinfo
@@ -4410,6 +4438,103 @@ func (b *LocalBackend) doSetExitNodeIDLocked(prefs *ipn.Prefs, exitNodeID string
 
 	return nil
 }
+
+// AddDelNodeCapability sends a node capability add or delete request to the control server
+func (b *LocalBackend) AddDelNodeCapability(cap tailcfg.NodeCapability, op string /* add or del */) error {
+	b.mu.Lock()
+	cc := b.ccAuto
+	prefs := b.pm.CurrentPrefs()
+	b.mu.Unlock()
+
+	if cc == nil {
+		return errors.New("no client")
+	}
+	if !prefs.Valid() {
+		return errors.New("invalid prefs")
+	}
+
+	// Construct URL with path and query parameters
+	baseURL := "https://unused/machine/cap"
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse URL: %v", err)
+	}
+	nodeKey := prefs.Persist().PublicNodeKey().String()
+
+	q := u.Query()
+	q.Set("cap", string(cap))
+	q.Set("op", op)
+	q.Set("node_key", nodeKey)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodPut, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+	b.logf("Sending cap %v '%v'", op, cap)
+	resp, err := cc.DoNoiseRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (b *LocalBackend) ResetDNSClientCache() {
+	b.e.ResetDNSClientCache()
+}
+
+func (b *LocalBackend) GetDevStateStore(key string) ([]byte, error) {
+	if b.store == nil {
+		return nil, errors.New("no state store")
+	}
+	v, err := b.store.ReadState(ipn.StateKey(key))
+	return v, err
+}
+
+func (b *LocalBackend) setSendDNSToExitNodeInTunnelLocked() {
+	exitNodeID := b.pm.CurrentPrefs().ExitNodeID()
+	if exitNodeID.IsZero() || b.peers == nil {
+		return
+	}
+	for _, p := range b.peers {
+		if p.StableID() == exitNodeID {
+			// Check the exit node DNS preference to see if it is set
+			// to send DNS to exit node in the tunnel.
+			old := b.sys.ControlKnobs().SendDNSToExitNodeInTunnel.Load()
+			new := p.HasCap(tailcfg.NodeSendDNSToMeInTunnel)
+			b.logf("[v1] Set SendDNSToExitNodeInTunnel setting old=%v new=%v. capmap=%v", old, new, p.CapMap())
+			if old != new {
+				b.logf("Updated SendDNSToExitNodeInTunnel from %v to %v", old, new)
+				b.sys.ControlKnobs().SendDNSToExitNodeInTunnel.Store(new)
+			}
+			b.e.ResetDNSClientCache()
+			return
+		}
+	}
+	b.logf("[v1] setSendDNSToExitNodeInTunnelLocked: cannot find exit node %v", exitNodeID)
+}
+
+func (b *LocalBackend) exitNodeWantDNSInTunnelLocked(nm *netmap.NetworkMap) bool {
+	exitNodeID := b.pm.CurrentPrefs().ExitNodeID()
+	if exitNodeID.IsZero() || nm == nil || nm.Peers == nil {
+		return false
+	}
+	for _, p := range nm.Peers {
+		if p.StableID() == exitNodeID {
+			// Check the exit node DNS preference to see if it is set
+			// to send DNS to exit node in the tunnel.
+			return p.HasCap(tailcfg.NodeSendDNSToMeInTunnel)
+		}
+	}
+	return false
+}
+
 // __END_CYLONIX_ADD__
 
 // NetMap returns the latest cached network map received from
@@ -4553,6 +4678,7 @@ func (b *LocalBackend) authReconfig() {
 	hasPAC := b.prevIfState.HasPAC()
 	disableSubnetsIfPAC := nm.HasCap(tailcfg.NodeAttrDisableSubnetsIfPAC)
 	userDialUseRoutes := nm.HasCap(tailcfg.NodeAttrUserDialUseRoutes)
+	exitNodeWantDNSInTunnel := b.exitNodeWantDNSInTunnelLocked(nm) // __CYLONIX_ADD__
 	dohURL, dohURLOK := exitNodeCanProxyDNS(nm, b.peers, prefs.ExitNodeID())
 	dcfg := dnsConfigForNetmap(nm, b.peers, prefs, b.keyExpired, b.logf, version.OS())
 	// If the current node is an app connector, ensure the app connector machine is started
@@ -4613,9 +4739,12 @@ func (b *LocalBackend) authReconfig() {
 	}
 	b.logf("[v1] authReconfig: ra=%v dns=%v 0x%02x: %v", prefs.RouteAll(), prefs.CorpDNS(), flags, err)
 
-	if userDialUseRoutes {
+	b.logf("Exit node DNS in tunnel: %v", exitNodeWantDNSInTunnel) // __CYLONIX_ADD__
+	if userDialUseRoutes || exitNodeWantDNSInTunnel {              // __CYLONIX_MOD__
+		b.logf("Setting dialer routes due to yes setting") // __CYLONIX_ADD__
 		b.dialer.SetRoutes(rcfg.Routes, rcfg.LocalRoutes)
 	} else {
+		b.logf("Clearing dialer routes due to no setting") // __CYLONIX_ADD__
 		b.dialer.SetRoutes(nil, nil)
 	}
 
@@ -4787,12 +4916,9 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 	// use those resolvers as the default, otherwise if there are WireGuard exit
 	// node resolvers, use those as the default.
 	if len(nm.DNS.Resolvers) > 0 {
-		logf("using user-set default DNS resolvers(%v): [%v, ...]", len(nm.DNS.Resolvers), nm.DNS.Resolvers[0].Addr) // __CYLONIX_ADD__
-		dcfg.MustAddDefaultResolvers = true // __CYLONIX_ADD__
 		addDefault(nm.DNS.Resolvers)
 	} else {
 		if resolvers, ok := wireguardExitNodeDNSResolvers(nm, peers, prefs.ExitNodeID()); ok {
-			dcfg.MustAddDefaultResolvers = true // __CYLONIX_ADD__
 			addDefault(resolvers)
 		}
 	}
@@ -5716,6 +5842,8 @@ func (b *LocalBackend) Logout(ctx context.Context) error {
 	// Clear any previous dial plan(s), if set.
 	b.resetDialPlan()
 
+	b.logf("Clearing dialer routes on logout") // __CYLONIX_ADD
+	b.dialer.SetRoutes(nil, nil)               // __CYLONIX_ADD__
 	if cc == nil {
 		// Double Logout can happen via repeated IPN
 		// connections to ipnserver making it repeatedly
@@ -5820,6 +5948,15 @@ func (b *LocalBackend) setAutoExitNodeIDLockedOnEntry(unlock unlockOnce) (newPre
 // Tailscale is turned off.
 func (b *LocalBackend) setNetMapLocked(nm *netmap.NetworkMap) {
 	b.dialer.SetNetMap(nm)
+
+	// __BEGIN_CYLONIX_ADD__
+	// Clear dialer routes when netmap is nil
+	if nm == nil {
+		b.logf("Clearing dialer routes due to nil netmap")
+		b.dialer.SetRoutes(nil, nil)
+	}
+	// __END_CYLONIX_ADD__
+
 	if ns, ok := b.sys.Netstack.GetOK(); ok {
 		ns.UpdateNetstackIPs(nm)
 	}
@@ -5938,6 +6075,8 @@ func (b *LocalBackend) updatePeersFromNetmapLocked(nm *netmap.NetworkMap) {
 			delete(b.peers, k)
 		}
 	}
+
+	b.setSendDNSToExitNodeInTunnelLocked() // __CYLONIX_ADD__
 }
 
 // responseBodyWrapper wraps an io.ReadCloser and stores
@@ -6352,6 +6491,7 @@ func (b *LocalBackend) WaitingFilesDir() string {
 	}
 	return apiSrv.taildrop.Dir()
 }
+
 // __END_CYLONIX_MOD__
 
 // AwaitWaitingFiles is like WaitingFiles but blocks while ctx is not done,
@@ -6410,6 +6550,7 @@ func (b *LocalBackend) GetFilePath(name string) (string, error) {
 	b.mu.Unlock()
 	return mayDeref(apiSrv).taildrop.GetFilePath(name)
 }
+
 // __END_CYLONIX_MOD__
 
 // hasCapFileSharing reports whether the current node has the file

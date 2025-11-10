@@ -2487,6 +2487,13 @@ const (
 	// If multiple values of this key exist, they should be merged in sequence
 	// (replace conflicting keys).
 	NodeAttrServiceHost NodeCapability = "service-host"
+
+	// __BEGIN_CYLOINIX_ADD__
+	// NodeSendDNSToMeInTunnel indicates that the client should send DNS queries
+	// to itself over the Tailscale tunnel. This applicable if the node is
+	// an exit node and prefers the DNS queries to be sent over the tunnel.
+	NodeSendDNSToMeInTunnel NodeCapability = "send-dns-to-me-in-tunnel"
+	// __END_CYLOINIX_ADD__
 )
 
 // SetDNSRequest is a request to add a DNS record.

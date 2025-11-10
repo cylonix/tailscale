@@ -166,13 +166,7 @@ func RegisterBoolWithLookUpPerCall(envVar string) func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if p, ok := regBool[envVar]; ok {
-			if envVar == "TS_DEBUG_ALWAYS_USE_DERP" {
-				log.Printf("envknob: %s=%v", envVar, *p)
-			}
 			return *p
-		}
-		if envVar == "TS_DEBUG_ALWAYS_USE_DERP" {
-			log.Printf("envknob: %s=%v", envVar, false)
 		}
 		return false
 	}

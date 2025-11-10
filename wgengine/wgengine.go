@@ -130,4 +130,12 @@ type Engine interface {
 	// packets traversing the data path. The hook can be uninstalled by
 	// calling this function with a nil value.
 	InstallCaptureHook(packet.CaptureCallback)
+
+	// __BEGIN_CYLONIX_ADD__
+	// ResetDNSClientCache resets the DNS client's cache.
+	ResetDNSClientCache()
+
+	// SetTunnelName sets the tunnel name
+	SetTunnelName(string)
+	// __END_CYLONIX_ADD__
 }

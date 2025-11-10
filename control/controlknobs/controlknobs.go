@@ -110,6 +110,14 @@ type Knobs struct {
 	// of queued netmap.NetworkMap between the controlclient and LocalBackend.
 	// See tailscale/tailscale#14768.
 	DisableSkipStatusQueue atomic.Bool
+
+	// __BEGIN_CYLONIX_ADD__
+	// SendDNSToExitNodeInTunnel is where to force DNS packets in the tunnel
+	// to the exit node. Effectively doing UserDial instead of SystemDial.
+	// This knob is local on the device and does not affect the overall
+	// UserDialUseRoutes capability.
+	SendDNSToExitNodeInTunnel atomic.Bool
+	// __END_CYLONIX_ADD__
 }
 
 // UpdateFromNodeAttributes updates k (if non-nil) based on the provided self

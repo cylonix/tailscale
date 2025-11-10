@@ -740,7 +740,9 @@ func (f *forwarder) sendUDP(ctx context.Context, fq *forwardQuery, rr resolverAn
 }
 
 func (f *forwarder) getDialerType() dnscache.DialContextFunc {
-	if f.controlKnobs != nil && f.controlKnobs.UserDialUseRoutes.Load() {
+	if f.controlKnobs != nil &&
+		(f.controlKnobs.UserDialUseRoutes.Load() ||
+			f.controlKnobs.SendDNSToExitNodeInTunnel.Load()) { // __CYLONIX_MOD__
 		// It is safe to use UserDial as it dials external servers without going through Tailscale
 		// and closes connections on interface change in the same way as SystemDial does,
 		// thus preventing DNS resolution issues when switching between WiFi and cellular,
@@ -1076,6 +1078,27 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		}
 	}
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (f *forwarder) ResetDNSClientCache() {
+	f.logf("Resetting DNS-over-HTTPS client cache")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, c := range f.dohClient {
+		f.logf("Closing idle connections for DoH client for %q", k)
+		c.CloseIdleConnections()
+		delete(f.dohClient, k)
+	}
+	f.dohClient = nil
+}
+
+func (f *forwarder) SetLinkSelector(linkSel ForwardLinkSelector) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.linkSel = linkSel
+}
+
+// __END_CYLONIX_ADD__
 
 var initListenConfig func(_ *net.ListenConfig, _ *netmon.Monitor, tunName string) error
 

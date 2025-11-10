@@ -58,6 +58,16 @@ const (
 	// has ever been received (even if partially).
 	// Any non-empty value indicates that at least one file has been received.
 	TaildropReceivedKey = StateKey("_taildrop-received")
+
+	// __BEGIN_CYLONIX_ADD__
+	// SendDNSToExitNodeInTunnelKey is the key under which we store the
+	// TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL value.
+	SendDNSToExitNodeInTunnelKey = StateKey("_send_dns_to_exit_node_tunnel")
+
+	// AlwaysUseRelayEnabledKey is the key under which we store the
+	// TS_DEBUG_ALWAYS_USE_DERP value.
+	AlwaysUseRelayEnabledKey = StateKey("_always_use_relay_enabled")
+	// __END_CYLONIX_ADD__
 )
 
 // CurrentProfileID returns the StateKey that stores the

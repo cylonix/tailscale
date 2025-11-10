@@ -380,6 +380,7 @@ func (d *Dialer) SystemDial(ctx context.Context, network, addr string) (net.Conn
 		return nil, net.ErrClosed
 	}
 
+	d.logf("Dialing system dial for %v/%v", network, addr) // __CYLONIX_ADD__
 	d.netnsDialerOnce.Do(func() {
 		d.netnsDialer = netns.NewDialer(d.logf, d.netMon)
 	})
@@ -407,6 +408,7 @@ func (d *Dialer) UserDial(ctx context.Context, network, addr string) (net.Conn, 
 	if err != nil {
 		return nil, err
 	}
+	d.logf("Dialing user dial for %v/%v ipp=%v", network, addr, ipp) // __CYLONIX_ADD__
 	if d.UseNetstackForIP != nil && d.UseNetstackForIP(ipp.Addr()) {
 		if d.NetstackDialTCP == nil || d.NetstackDialUDP == nil {
 			return nil, errors.New("Dialer not initialized correctly")
@@ -419,10 +421,14 @@ func (d *Dialer) UserDial(ctx context.Context, network, addr string) (net.Conn, 
 
 	if routes := d.routes.Load(); routes != nil {
 		if isTailscaleRoute, _ := routes.Lookup(ipp.Addr()); isTailscaleRoute {
+			d.logf("User dial routing through peer dialer for %v/%v", network, addr) // __CYLONIX_ADD__
 			return d.getPeerDialer().DialContext(ctx, network, ipp.String())
 		}
 
+		d.logf("User dial calling system dial with routes %v for %v/%v", routes, network, addr) // __CYLONIX_ADD__
 		return d.SystemDial(ctx, network, ipp.String())
+	} else {
+		d.logf("User dial has no routes. Continue to standard dial for %v/%v", network, addr) // __CYLONIX_ADD__
 	}
 
 	// Workaround for macOS for now: dial Tailscale IPs with peer dialer.
@@ -435,6 +441,7 @@ func (d *Dialer) UserDial(ctx context.Context, network, addr string) (net.Conn, 
 	}
 	// TODO(bradfitz): netns, etc
 	var stdDialer net.Dialer
+	d.logf("User dial using standard dial for %v/%v, ipp=%v", network, addr, ipp) // __CYLONIX_ADD__
 	return stdDialer.DialContext(ctx, network, ipp.String())
 }
 

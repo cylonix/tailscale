@@ -169,3 +169,14 @@ func (e *watchdogEngine) InstallCaptureHook(cb packet.CaptureCallback) {
 func (e *watchdogEngine) PeerByKey(pubKey key.NodePublic) (_ wgint.Peer, ok bool) {
 	return e.wrap.PeerByKey(pubKey)
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (e *watchdogEngine) ResetDNSClientCache() {
+	// no-op
+}
+
+func (e *watchdogEngine) SetTunnelName(_ string) {
+	// no-op
+}
+
+// __END_CYLONIX_ADD__

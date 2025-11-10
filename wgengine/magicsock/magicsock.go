@@ -375,6 +375,11 @@ type Conn struct {
 
 	// metrics contains the metrics for the magicsock instance.
 	metrics *metrics
+
+	// __BEGIN_CYLONIX_ADD__
+	// wgOnyPeerAddrs are the addresses of the wg-only peers.
+	wgOnlyPeerAddrs []netip.AddrPort
+	// __END_CYLONIX_ADD__
 }
 
 // SetDebugLoggingEnabled controls whether spammy debug logging is enabled.
@@ -1462,6 +1467,26 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 					continue
 				}
 				ipp := msg.Addr.(*net.UDPAddr).AddrPort()
+				// __BEGIN_CYLONIX_ADD__
+				// Check if we should block non-wg-only peers' UDP packets.
+				if debugAlwaysDERPAllowWgOnlyExitNode() && debugAlwaysDERP() {
+					// This check is may be slow. User should avoid setting
+					// debug always DERP if having wg-only peers.
+					found := false
+					c.mu.Lock()
+					for _, addr := range c.wgOnlyPeerAddrs {
+						if addr.Addr().Compare(ipp.Addr()) == 0 {
+							found = true
+							break
+						}
+					}
+					c.mu.Unlock()
+					if !found {
+						sizes[i] = 0
+						continue
+					}
+				}
+				// __END_CYLONIX_ADD__
 				if ep, ok := c.receiveIP(msg.Buffers[0][:msg.N], ipp, &epCache); ok {
 					if packetMetric != nil {
 						packetMetric.Add(1)
@@ -2177,6 +2202,8 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 	curPeers := views.SliceOf(nm.Peers)
 	c.peers = curPeers
 
+	c.setWgOnlyPeerAddrsLocked(nm.Peers) // __CYLONIX_ADD__
+
 	flags := c.debugFlagsLocked()
 	if addrs := nm.GetAddresses(); addrs.Len() > 0 {
 		c.firstAddrForTest = addrs.At(0).Addr()
@@ -2642,7 +2669,7 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
 		return nil
 	}
 
-	if debugAlwaysDERP() {
+	if debugAlwaysDERP() && !debugAlwaysDERPAllowWgOnlyExitNode() { // __CYLONIX_MOD__
 		c.logf("magicsock: bindSocket: disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
 		ruc.setConnLocked(newBlockForeverConn(), "", c.bind.BatchSize())
 		return nil
@@ -3216,3 +3243,18 @@ func (le *lazyEndpoint) GetPeerEndpoint(peerPublicKey [32]byte) conn.Endpoint {
 	le.c.logf("magicsock: lazyEndpoint.GetPeerEndpoint(%v) found: %v", pubKey.ShortString(), ep.nodeAddr)
 	return ep
 }
+
+// __BEGIN_CYLONIX_ADD__
+// setWgOnlyPeerAddrsLocked sets the list of WireGuard-only peer addresses.
+// c.mu lock must be held.
+func (c *Conn) setWgOnlyPeerAddrsLocked(peers []tailcfg.NodeView) {
+	var addrs []netip.AddrPort
+	for _, p := range peers {
+		if p.IsWireGuardOnly() {
+			addrs = append(addrs, p.Endpoints().AsSlice()...)
+		}
+	}
+	c.wgOnlyPeerAddrs = addrs
+}
+
+// __END_CYLONIX_ADD__

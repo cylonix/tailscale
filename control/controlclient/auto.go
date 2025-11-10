@@ -528,6 +528,15 @@ func (c *Auto) mapRoutine() {
 		} else {
 			mrs.bo.BackOff(ctx, err)
 			report(err, "PollNetMap")
+			// __BEGIN_CYLONIX_ADD__
+			// If we got an unauthorized error, log out.
+			if errors.Is(err, ErrNodeUnauthorized) {
+				// The node was de-authorized. Log out.
+				c.logf("mapRoutine: logging out due to unauthorized error")
+				c.Logout(context.Background())
+				c.sendStatus("authRoutine-node-unauthorized", ErrNodeUnauthorized, "", nil)
+			}
+			// __END_CYLONIX_ADD__
 		}
 	}
 }

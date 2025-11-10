@@ -571,6 +571,17 @@ func (m *Manager) FlushCaches() error {
 	return flushCaches()
 }
 
+// __BEGIN_CYLONIX_ADD__
+func (m *Manager) ResetDNSClientCache() {
+	m.resolver.ResetDNSClientCache()
+}
+
+func (m *Manager) SetLinkSelector(linkSel resolver.ForwardLinkSelector) {
+	m.resolver.SetLinkSelector(linkSel)
+}
+
+// __END_CYLONIX_ADD__
+
 // CleanUp restores the system DNS configuration to its original state
 // in case the Tailscale daemon terminated without closing the router.
 // No other state needs to be instantiated before this runs.
