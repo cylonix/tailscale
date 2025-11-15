@@ -1309,7 +1309,6 @@ func (r *Resolver) respond(query []byte) ([]byte, error) {
 
 // ResetDNSClientCache resets the DNS client's cache.
 func (r *Resolver) ResetDNSClientCache() {
-	r.logf("Resetting DNS client cache")
 	r.forwarder.ResetDNSClientCache()
 }
 
