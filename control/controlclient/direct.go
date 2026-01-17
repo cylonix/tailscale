@@ -352,6 +352,20 @@ func (c *Direct) Close() error {
 	return nil
 }
 
+// __BEGIN_CYLONIX_ADD__
+// ResetNoiseConnections resets all active noise connections without closing
+// the client. This forces the next request to dial a new connection.
+// This is useful when the VPN configuration changes on mobile platforms.
+func (c *Direct) ResetNoiseConnections() {
+	c.mu.Lock()
+	nc := c.noiseClient
+	c.mu.Unlock()
+	if nc != nil {
+		nc.ResetConnections()
+	}
+}
+// __END_CYLONIX_ADD__
+
 // SetHostinfo clones the provided Hostinfo and remembers it for the
 // next update. It reports whether the Hostinfo has changed.
 func (c *Direct) SetHostinfo(hi *tailcfg.Hostinfo) bool {

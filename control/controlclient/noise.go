@@ -304,6 +304,25 @@ func (nc *NoiseClient) Close() error {
 	return multierr.New(errors...)
 }
 
+// __BEGIN_CYLONIX_ADD__
+// ResetConnections closes all active noise connections without marking the
+// client as closed. This forces the next request to dial a new connection.
+// This is useful when the VPN configuration changes and existing connections
+// may no longer route correctly (e.g., on Android/iOS when exit node changes).
+func (nc *NoiseClient) ResetConnections() {
+	nc.mu.Lock()
+	conns := nc.connPool
+	nc.connPool = nil
+	nc.last = nil
+	nc.mu.Unlock()
+
+	for _, c := range conns {
+		c.Close()
+	}
+	nc.logf("noise: reset %d connections due to VPN config change", len(conns))
+}
+// __END_CYLONIX_ADD__
+
 // dial opens a new connection to tailcontrol, fetching the server noise key
 // if not cached.
 func (nc *NoiseClient) dial(ctx context.Context) (*noiseconn.Conn, error) {

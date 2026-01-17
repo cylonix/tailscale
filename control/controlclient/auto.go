@@ -407,6 +407,15 @@ func (c *Auto) DirectForTest() *Direct {
 	return c.direct
 }
 
+// __BEGIN_CYLONIX_ADD__
+// ResetNoiseConnections resets all active noise connections.
+// This forces the next control server request to dial a new connection.
+// This is useful when VPN configuration changes on mobile platforms.
+func (c *Auto) ResetNoiseConnections() {
+	c.direct.ResetNoiseConnections()
+}
+// __END_CYLONIX_ADD__
+
 // unpausedChanLocked returns a new channel that gets sent
 // either a true when unpaused or false on Auto.Shutdown.
 //

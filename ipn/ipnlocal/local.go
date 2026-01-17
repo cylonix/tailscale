@@ -4068,7 +4068,7 @@ func (b *LocalBackend) editPrefsLockedOnEntry(mp *ipn.MaskedPrefs, unlock unlock
 	if p0.ExitNodeID() != p1.ExitNodeID {
 		b.logf("EditPrefs: exit node change %q -> %q", p0.ExitNodeID(), p1.ExitNodeID)
 		if err := b.doSetExitNodeIDLocked(p1, string(p1.ExitNodeID)); err != nil {
-			b.logf("failed to set exit node id")
+			b.logf("failed to set exit node id: %v", err)
 			return ipn.PrefsView{}, err
 		}
 		b.logf("EditPrefs: exit node change to host info done")
@@ -4421,7 +4421,10 @@ func (b *LocalBackend) doSetExitNodeIDLocked(prefs *ipn.Prefs, exitNodeID string
 	q.Set("exit_node_id", exitNodeID)
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodPut, u.String(), nil)
+	replyCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(replyCtx, http.MethodPut, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
@@ -4467,7 +4470,10 @@ func (b *LocalBackend) AddDelNodeCapability(cap tailcfg.NodeCapability, op strin
 	q.Set("node_key", nodeKey)
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodPut, u.String(), nil)
+	replyCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(replyCtx, http.MethodPut, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
@@ -6983,6 +6989,21 @@ func (b *LocalBackend) DebugRebind() error {
 	b.MagicConn().Rebind()
 	return nil
 }
+
+// __BEGIN_CYLONIX_ADD__
+// ResetNoiseConnections resets all active noise connections to the control server.
+// This forces the next control plane request to dial a new connection.
+// This is useful on mobile platforms (Android/iOS) when the VPN configuration
+// changes, as existing protected sockets may no longer route correctly.
+func (b *LocalBackend) ResetNoiseConnections() {
+	b.mu.Lock()
+	cc := b.ccAuto
+	b.mu.Unlock()
+	if cc != nil {
+		cc.ResetNoiseConnections()
+	}
+}
+// __END_CYLONIX_ADD__
 
 func (b *LocalBackend) DebugReSTUN() error {
 	b.MagicConn().ReSTUN("explicit-debug")
