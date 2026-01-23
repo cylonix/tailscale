@@ -2953,11 +2953,11 @@ const (
 
 	// heartbeatInterval is how often pings to the best UDP address
 	// are sent.
-	heartbeatInterval = 3 * time.Second
+	heartbeatIntervalDefault = 3 * time.Second // __CYLONIX_MOD__
 
 	// trustUDPAddrDuration is how long we trust a UDP address as the exclusive
 	// path (without using DERP) without having heard a Pong reply.
-	trustUDPAddrDuration = 6500 * time.Millisecond
+	trustUDPAddrDurationDefault = 6500 * time.Millisecond // __CYLONIX_MOD__
 
 	// goodEnoughLatency is the latency at or under which we don't
 	// try to upgrade to a better path.
@@ -2969,11 +2969,46 @@ const (
 	endpointsFreshEnoughDuration = 27 * time.Second
 )
 
+// __BEGIN_CYLONIX_ADD__
+// The following overrides allow for environment variable based
+// configuration to improve the connection between international or unstable
+// direct connections which may still be preferred than DERP since DERP
+// might be blocked or have very high latency. e.g. a cross continent
+// multi-cloud k8s mesh network deployment.
+
+// trustUDPAddrDuration returns the trustUDPAddrDuration, using the
+// TS_TRUST_UDP_ADDR_DURATION environment variable override if set.
+func trustUDPAddrDuration() time.Duration {
+	if d := trustUDPAddrDurationOverride(); d > 0 {
+		return d
+	}
+	return trustUDPAddrDurationDefault
+}
+
+// heartbeatInterval returns the heartbeatInterval, using the
+// TS_HEARTBEAT_INTERVAL environment variable override if set.
+func heartbeatInterval() time.Duration {
+	if d := heartbeatIntervalOverride(); d > 0 {
+		return d
+	}
+	return heartbeatIntervalDefault
+}
+
+// pingTimeoutDuration returns the pingTimeoutDuration, using the
+// TS_HEARTBEAT_PING_TIMEOUT environment variable override if set.
+func pingTimeoutDuration() time.Duration {
+	if d := pingTimeoutDurationOverride(); d > 0 {
+		return d
+	}
+	return pingTimeoutDurationDefault
+}
+// __END_CYLONIX_ADD__
+
 // Constants that are variable for testing.
 var (
 	// pingTimeoutDuration is how long we wait for a pong reply before
 	// assuming it's never coming.
-	pingTimeoutDuration = 5 * time.Second
+	pingTimeoutDurationDefault = 5 * time.Second // __CYLONIX_MOD__
 
 	// discoPingInterval is the minimum time between pings
 	// to an endpoint. (Except in the case of CallMeMaybe frames

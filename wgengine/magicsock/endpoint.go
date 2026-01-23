@@ -253,7 +253,7 @@ func (p *ProbeUDPLifetimeConfig) Valid() bool {
 		return false
 	}
 	for i, c := range p.Cliffs {
-		if c <= max(udpLifetimeProbeCliffSlack*2, heartbeatInterval) {
+		if c <= max(udpLifetimeProbeCliffSlack*2, heartbeatInterval()) { // __CYLONIX_MOD__
 			// A timeout cliff less than or equal to twice
 			// udpLifetimeProbeCliffSlack is invalid due to being effectively
 			// zero when the cliff slack is subtracted from the cliff value at
@@ -482,7 +482,7 @@ func (de *endpoint) noteRecvActivity(ipp netip.AddrPort, now mono.Time) {
 		// to DERP.
 		de.mu.Lock()
 		if de.heartbeatDisabled && de.bestAddr.AddrPort == ipp {
-			de.trustBestAddrUntil = now.Add(trustUDPAddrDuration)
+			de.trustBestAddrUntil = now.Add(trustUDPAddrDuration()) // __CYLONIX_MOD__
 		}
 		de.mu.Unlock()
 	}
@@ -827,7 +827,7 @@ func (de *endpoint) heartbeat() {
 		de.sendDiscoPingsLocked(now, true)
 	}
 
-	de.heartBeatTimer = time.AfterFunc(heartbeatInterval, de.heartbeat)
+	de.heartBeatTimer = time.AfterFunc(heartbeatInterval(), de.heartbeat) // __CYLONIX_MOD__
 }
 
 // setHeartbeatDisabled sets heartbeatDisabled to the provided value.
@@ -863,7 +863,7 @@ func (de *endpoint) wantFullPingLocked(now mono.Time) bool {
 func (de *endpoint) noteTxActivityExtTriggerLocked(now mono.Time) {
 	de.lastSendExt = now
 	if de.heartBeatTimer == nil && !de.heartbeatDisabled {
-		de.heartBeatTimer = time.AfterFunc(heartbeatInterval, de.heartbeat)
+		de.heartBeatTimer = time.AfterFunc(heartbeatInterval(), de.heartbeat) // __CYLONIX_MOD__
 	}
 }
 
@@ -1195,7 +1195,7 @@ func (de *endpoint) startDiscoPingLocked(ep netip.AddrPort, now mono.Time, purpo
 		de.sentPing[txid] = sentPing{
 			to:      ep,
 			at:      now,
-			timer:   time.AfterFunc(pingTimeoutDuration, func() { de.discoPingTimeout(txid) }),
+			timer:   time.AfterFunc(pingTimeoutDuration(), func() { de.discoPingTimeout(txid) }), // __CYLONIX_MOD__
 			purpose: purpose,
 			resCB:   resCB,
 			size:    s,
@@ -1628,7 +1628,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src netip
 			})
 			de.bestAddr.latency = latency
 			de.bestAddrAt = now
-			de.trustBestAddrUntil = now.Add(trustUDPAddrDuration)
+			de.trustBestAddrUntil = now.Add(trustUDPAddrDuration()) // __CYLONIX_MOD__
 		}
 	}
 	return

@@ -7,6 +7,7 @@ package magicsock
 
 import (
 	"net/netip"
+	"time" // __CYLONIX_ADD__
 
 	"tailscale.com/types/opt"
 )
@@ -31,3 +32,10 @@ func debugRingBufferMaxSizeBytes() int { return 0 }
 func inTest() bool                     { return false }
 func debugPeerMap() bool               { return false }
 func pretendpoints() []netip.AddrPort  { return []netip.AddrPort{} }
+
+// __BEGIN_CYLONIX_ADD__
+func trustUDPAddrDurationOverride() time.Duration { return 0 }
+func heartbeatIntervalOverride() time.Duration    { return 0 }
+func pingTimeoutDurationOverride() time.Duration  { return 0 }
+func debugAlwaysDERPAllowWgOnlyExitNode() bool    { return false }
+// __END_CYLONIX_ADD__

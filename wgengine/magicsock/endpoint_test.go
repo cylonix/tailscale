@@ -112,7 +112,7 @@ func TestProbeUDPLifetimeConfig_Valid(t *testing.T) {
 		{
 			"cliff too small",
 			&ProbeUDPLifetimeConfig{
-				Cliffs:             []time.Duration{min(udpLifetimeProbeCliffSlack*2, heartbeatInterval)},
+				Cliffs:             []time.Duration{min(udpLifetimeProbeCliffSlack*2, heartbeatInterval())},
 				CycleCanStartEvery: time.Hour,
 			},
 			false,

@@ -53,6 +53,23 @@ var (
 	// debugRingBufferMaxSizeBytes overrides the default size of the endpoint
 	// history ringbuffer.
 	debugRingBufferMaxSizeBytes = envknob.RegisterInt("TS_DEBUG_MAGICSOCK_RING_BUFFER_MAX_SIZE_BYTES")
+
+	// __BEGIN_CYLONIX_ADD__
+	// trustUDPAddrDurationOverride overrides the default trustUDPAddrDuration (6.5s).
+	// This controls how long we trust a UDP address without receiving a pong reply
+	// before falling back to DERP. Higher values are more tolerant of packet loss
+	// on high-latency links. Example: TS_TRUST_UDP_ADDR_DURATION=15s
+	trustUDPAddrDurationOverride = envknob.RegisterDuration("TS_TRUST_UDP_ADDR_DURATION")
+	// heartbeatIntervalOverride overrides the default heartbeatInterval (3s).
+	// This controls how often pings are sent to the best UDP address.
+	// Shorter intervals detect failures faster. Example: TS_HEARTBEAT_INTERVAL=2s
+	heartbeatIntervalOverride = envknob.RegisterDuration("TS_HEARTBEAT_INTERVAL")
+	// pingTimeoutDurationOverride overrides the default pingTimeoutDuration (5s).
+	// This controls how long we wait for a pong reply before timing out.
+	// Shorter timeouts allow faster retry. Example: TS_HEARTBEAT_PING_TIMEOUT=2s
+	pingTimeoutDurationOverride = envknob.RegisterDuration("TS_HEARTBEAT_PING_TIMEOUT")
+	// __END_CYLONIX_ADD__
+
 	// debugEnablePMTUD enables the peer MTU feature, which does path MTU
 	// discovery on UDP connections between peers. Currently (2023-09-05)
 	// this only turns on the don't fragment bit for the magicsock UDP
