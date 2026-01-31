@@ -27,9 +27,9 @@ import (
 
 var netlockCmd = &ffcli.Command{
 	Name:       "lock",
-	ShortUsage: "tailscale lock <subcommand> [arguments...]",
-	ShortHelp:  "Manage tailnet lock",
-	LongHelp:   "Manage tailnet lock",
+	ShortUsage: "cylonix lock <subcommand> [arguments...]",
+	ShortHelp:  "Manage mesh network lock",
+	LongHelp:   "Manage mesh network lock",
 	Subcommands: []*ffcli.Command{
 		nlInitCmd,
 		nlStatusCmd,

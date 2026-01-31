@@ -76,10 +76,10 @@ kube-generate-deepcopy: ## Refresh generated deepcopy functionality for Tailscal
 	./scripts/kube-deepcopy.sh
 
 spk: ## Build synology package for ${SYNO_ARCH} architecture and ${SYNO_DSM} DSM version
-	./tool/go run ./cmd/dist build synology/dsm${SYNO_DSM}/${SYNO_ARCH}
+	./tool/go run ./cmd/dist build cylonix-synology/dsm${SYNO_DSM}/${SYNO_ARCH}
 
 spkall: ## Build synology packages for all architectures and DSM versions
-	./tool/go run ./cmd/dist build synology
+	./tool/go run ./cmd/dist build cylonix-synology
 
 pushspk: spk ## Push and install synology package on ${SYNO_HOST} host
 	echo "Pushing SPK to root@${SYNO_HOST} (env var SYNO_HOST) ..."

@@ -5484,7 +5484,7 @@ func (b *LocalBackend) enterStateLockedOnEntry(newState ipn.State, unlock unlock
 		}
 
 		if authURL == "" {
-			systemd.Status("Stopped; run 'tailscale up' to log in")
+			systemd.Status("Stopped; run 'cylonix up' to log in") // __CYLONIX_MOD__
 		}
 	case ipn.Starting, ipn.NeedsMachineAuth:
 		b.authReconfig()

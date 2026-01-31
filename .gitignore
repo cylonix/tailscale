@@ -40,6 +40,8 @@ ssh/tailssh/testcontainers/tailscaled
 .vite/
 client/web/node_modules
 client/web/build/assets
+client/web/.env
+client/web/.env.local
 
 /gocross
 /dist

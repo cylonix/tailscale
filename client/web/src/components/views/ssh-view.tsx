@@ -8,6 +8,7 @@ import * as Control from "src/components/control-components"
 import { NodeData } from "src/types"
 import Card from "src/ui/card"
 import Toggle from "src/ui/toggle"
+import { Env } from "src/env"
 
 export default function SSHView({
   readonly,
@@ -20,10 +21,10 @@ export default function SSHView({
 
   return (
     <>
-      <h1 className="mb-1">Tailscale SSH server</h1>
+      <h1 className="mb-1">{Env.appName} SSH server</h1>
       <p className="description mb-10">
-        Run a Tailscale SSH server on this device and allow other devices in
-        your tailnet to SSH into it.{" "}
+        Run a {Env.appName} SSH server on this device and allow other devices in
+        your mesh network to SSH into it.{" "}
         <a
           href="https://tailscale.com/kb/1193/tailscale-ssh/"
           className="text-blue-700"
@@ -49,7 +50,7 @@ export default function SSHView({
               }
             />
             <div className="text-black text-sm font-medium leading-tight">
-              Run Tailscale SSH server
+              Run {Env.appName} SSH server
             </div>
           </label>
         ) : (
@@ -71,7 +72,7 @@ export default function SSHView({
         >
           Remember to make sure that the{" "}
           <Control.AdminLink node={node} path="/acls">
-            tailnet policy file
+            {Env.appName} mesh network policy file
           </Control.AdminLink>{" "}
           allows other devices to SSH into this device.
         </Control.AdminContainer>

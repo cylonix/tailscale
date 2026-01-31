@@ -14,6 +14,7 @@ import Button from "src/ui/button"
 import Card from "src/ui/card"
 import Dialog from "src/ui/dialog"
 import QuickCopy from "src/ui/quick-copy"
+import { Env } from "src/env"
 import { useLocation } from "wouter"
 
 export default function DeviceDetailsView({
@@ -86,7 +87,7 @@ export default function DeviceDetailsView({
                 </td>
               </tr>
               <tr>
-                <td>Tailscale version</td>
+                <td>{Env.appName} version</td>
                 <td>{node.IPNVersion}</td>
               </tr>
               <tr>
@@ -108,7 +109,7 @@ export default function DeviceDetailsView({
           <table>
             <tbody>
               <tr>
-                <td>Tailscale IPv4</td>
+                <td>{Env.appName} IPv4</td>
                 <td>
                   <QuickCopy
                     primaryActionValue={node.IPv4}
@@ -119,7 +120,7 @@ export default function DeviceDetailsView({
                 </td>
               </tr>
               <tr>
-                <td>Tailscale IPv6</td>
+                <td>{Env.appName} IPv6</td>
                 <td>
                   <QuickCopy
                     primaryActionValue={node.IPv6}
@@ -191,7 +192,7 @@ export default function DeviceDetailsView({
             ·{" "}
             <a
               className="link"
-              href="https://tailscale.com/privacy-policy/"
+              href={Env.privacyPolicyURL}
               target="_blank"
               rel="noreferrer"
             >
@@ -200,7 +201,7 @@ export default function DeviceDetailsView({
             ·{" "}
             <a
               className="link"
-              href="https://tailscale.com/terms/"
+              href={Env.termsOfServiceURL}
               target="_blank"
               rel="noreferrer"
             >
@@ -211,8 +212,8 @@ export default function DeviceDetailsView({
             WireGuard is a registered trademark of Jason A. Donenfeld.
           </p>
           <p>
-            © {new Date().getFullYear()} Tailscale Inc. All rights reserved.
-            Tailscale is a registered trademark of Tailscale Inc.
+            © {new Date().getFullYear()} {Env.companyName}. All rights reserved.
+            { ' ' + Env.appName} is a registered trademark of {Env.companyName}.
           </p>
         </footer>
       </div>
@@ -227,22 +228,22 @@ function DisconnectDialog() {
   return (
     <Dialog
       className="max-w-md"
-      title="Log out"
-      trigger={<Button sizeVariant="small">Log out…</Button>}
+      title="Sign out"
+      trigger={<Button sizeVariant="small">Sign out…</Button>}
     >
       <Dialog.Form
         cancelButton
-        submitButton="Log out"
+        submitButton="Sign out"
         destructive
         onSubmit={() => {
           api({ action: "logout" })
           setLocation("/disconnected")
         }}
       >
-        Logging out of this device will disconnect it from your tailnet and
+        Signing out of this device will disconnect it from your mesh network and
         expire its node key. You won’t be able to use this web interface until
-        you re-authenticate the device from either the Tailscale app or the
-        Tailscale command line interface.
+        you re-authenticate the device from either the {Env.appName} app or the
+        {Env.appName} command line interface.
       </Dialog.Form>
     </Dialog>
   )

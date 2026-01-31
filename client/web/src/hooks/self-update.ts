@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { apiFetch } from "src/api"
 import { VersionInfo } from "src/types"
+import { Env } from "src/env"
 
 // see ipnstate.UpdateProgress
 export type UpdateProgress = {
@@ -77,7 +78,7 @@ export function useInstallUpdate(currentVersion: string, cv?: VersionInfo) {
               if (up.version === currentVersion && tsAwayForPolls > 0) {
                 setUpdateState(UpdateState.Failed)
                 appendUpdateLog(
-                  "ERROR: Update failed, still running Tailscale " + up.version
+                  "ERROR: Update failed, still running " + Env.appName + " " + up.version
                 )
                 if (up.message) appendUpdateLog("ERROR: " + up.message)
               } else {
@@ -101,7 +102,7 @@ export function useInstallUpdate(currentVersion: string, cv?: VersionInfo) {
           if (tsAwayForPolls >= 5 * 60) {
             setUpdateState(UpdateState.Failed)
             appendUpdateLog(
-              "ERROR: tailscaled went away but did not come back!"
+              `ERROR: ${Env.daemonName} went away but did not come back!`
             )
             appendUpdateLog("ERROR: last error received:")
             appendUpdateLog(err.toString())

@@ -26,15 +26,14 @@ import (
 
 var webCmd = &ffcli.Command{
 	Name:       "web",
-	ShortUsage: "tailscale web [flags]",
-	ShortHelp:  "Run a web server for controlling Tailscale",
+	ShortUsage: "cylonix web [flags]",
+	ShortHelp:  "Run a web server for controlling Cylonix",
 
 	LongHelp: strings.TrimSpace(`
-"tailscale web" runs a webserver for controlling the Tailscale daemon.
-
+"cylonix web" runs a webserver for controlling the Cylonix daemon.
 It's primarily intended for use on Synology, QNAP, and other
 NAS devices where a web interface is the natural place to control
-Tailscale, as opposed to a CLI or a native app.
+Cylonix, as opposed to a CLI or a native app.
 `),
 
 	FlagSet: (func() *flag.FlagSet {
@@ -99,9 +98,9 @@ func runWeb(ctx context.Context, args []string) error {
 	var startedManagementClient bool // we started the management client
 	if !existingWebClient && !webArgs.readonly {
 		// Also start full client in tailscaled.
-		log.Printf("starting tailscaled web client at http://%s\n", netip.AddrPortFrom(selfIP, web.ListenPort))
+		log.Printf("starting cylonixd web client at http://%s\n", netip.AddrPortFrom(selfIP, web.ListenPort))
 		if err := setRunWebClient(ctx, true); err != nil {
-			return fmt.Errorf("starting web client in tailscaled: %w", err)
+			return fmt.Errorf("starting web client in cylonixd: %w", err)
 		}
 		startedManagementClient = true
 	}
@@ -126,11 +125,11 @@ func runWeb(ctx context.Context, args []string) error {
 			// Shutdown the server.
 			webServer.Shutdown()
 			if !webArgs.cgi && startedManagementClient {
-				log.Println("stopping tailscaled web client")
+				log.Println("stopping cylonixd web client")
 				// When not in cgi mode, shut down the tailscaled
 				// web client on cli termination if we started it.
 				if err := setRunWebClient(context.Background(), false); err != nil {
-					log.Printf("stopping tailscaled web client: %v", err)
+					log.Printf("stopping cylonixd web client: %v", err)
 				}
 			}
 		}

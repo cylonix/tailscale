@@ -10,6 +10,7 @@ import { VersionInfo } from "src/types"
 import Button from "src/ui/button"
 import Spinner from "src/ui/spinner"
 import { useLocation } from "wouter"
+import { Env } from "src/env"
 
 /**
  * UpdatingView is rendered when the user initiates a Tailscale update, and
@@ -36,7 +37,7 @@ export function UpdatingView({
             <h1 className="text-2xl m-3">Update in progress</h1>
             <p className="text-gray-400">
               The update shouldn’t take more than a couple of minutes. Once it’s
-              completed, you will be asked to log in again.
+              completed, you will be asked to sign in again.
             </p>
           </>
         ) : updateState === UpdateState.Complete ? (
@@ -44,7 +45,7 @@ export function UpdatingView({
             <CheckCircleIcon />
             <h1 className="text-2xl m-3">Update complete!</h1>
             <p className="text-gray-400">
-              You updated Tailscale
+              You updated {Env.appName}
               {versionInfo && versionInfo.LatestVersion
                 ? ` to ${versionInfo.LatestVersion}`
                 : null}
@@ -55,7 +56,7 @@ export function UpdatingView({
               sizeVariant="small"
               onClick={() => setLocation("/")}
             >
-              Log in to access
+              Sign in to access
             </Button>
           </>
         ) : updateState === UpdateState.UpToDate ? (
@@ -63,7 +64,7 @@ export function UpdatingView({
             <CheckCircleIcon />
             <h1 className="text-2xl m-3">Up to date!</h1>
             <p className="text-gray-400">
-              You are already running Tailscale {currentVersion}, which is the
+              You are already running {Env.appName} {currentVersion}, which is the
               newest version available.
             </p>
             <Button

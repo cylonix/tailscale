@@ -24,24 +24,24 @@ import (
 
 var pingCmd = &ffcli.Command{
 	Name:       "ping",
-	ShortUsage: "tailscale ping <hostname-or-IP>",
-	ShortHelp:  "Ping a host at the Tailscale layer, see how it routed",
+	ShortUsage: "cylonix ping <hostname-or-IP>",
+	ShortHelp:  "Ping a host at the Cylonix layer, see how it routed",
 	LongHelp: strings.TrimSpace(`
 
-The 'tailscale ping' command pings a peer node from the Tailscale layer
+The 'cylonix ping' command pings a peer node from the Cylonix layer
 and reports which route it took for each response. The first ping or
-so will likely go over DERP (Tailscale's TCP relay protocol) while NAT
+so will likely go over DERP (Cylonix's TCP relay protocol) while NAT
 traversal finds a direct path through.
 
-If 'tailscale ping' works but a normal ping does not, that means one
-side's operating system firewall is blocking packets; 'tailscale ping'
+If 'cylonix ping' works but a normal ping does not, that means one
+side's operating system firewall is blocking packets; 'cylonix ping'
 does not inject packets into either side's TUN devices.
 
-By default, 'tailscale ping' stops after 10 pings or once a direct
+By default, 'cylonix ping' stops after 10 pings or once a direct
 (non-DERP) path has been established, whichever comes first.
 
-The provided hostname must resolve to or be a Tailscale IP
-(e.g. 100.x.y.z) or a subnet IP advertised by a Tailscale
+The provided hostname must resolve to or be a Cylonix IP
+(e.g. 100.x.y.z) or a subnet IP advertised by a Cylonix
 relay node.
 
 `),
@@ -105,7 +105,7 @@ func runPing(ctx context.Context, args []string) error {
 	}
 
 	if len(args) != 1 || args[0] == "" {
-		return errors.New("usage: tailscale ping <hostname-or-IP>")
+		return errors.New("usage: cylonix ping <hostname-or-IP>")
 	}
 	var ip string
 
@@ -115,7 +115,7 @@ func runPing(ctx context.Context, args []string) error {
 		return err
 	}
 	if self {
-		printf("%v is local Tailscale IP\n", ip)
+		printf("%v is local Cylonix IP\n", ip)
 		return nil
 	}
 

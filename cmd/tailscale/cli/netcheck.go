@@ -28,7 +28,7 @@ import (
 
 var netcheckCmd = &ffcli.Command{
 	Name:       "netcheck",
-	ShortUsage: "tailscale netcheck",
+	ShortUsage: " cylonix netcheck",
 	ShortHelp:  "Print an analysis of local network conditions",
 	Exec:       runNetcheck,
 	FlagSet: (func() *flag.FlagSet {
@@ -81,7 +81,7 @@ func runNetcheck(ctx context.Context, args []string) error {
 	dm, err := localClient.CurrentDERPMap(ctx)
 	noRegions := dm != nil && len(dm.Regions) == 0
 	if noRegions {
-		log.Printf("No DERP map from tailscaled; using default.")
+		log.Printf("No DERP map from cylonixd; using default.")
 	}
 	if err != nil || noRegions {
 		hc := &http.Client{

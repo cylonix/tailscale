@@ -1,0 +1,13 @@
+{
+  "defaults":{
+    "run-as": "package"
+  },
+  "username": "cylonix",
+  "groupname": "cylonix",
+  "tool": [{
+    "relpath": "bin/cylonixd",
+    "user": "package",
+    "group": "package",
+    "capabilities": "cap_net_admin,cap_chown,cap_net_raw"
+  }]
+}

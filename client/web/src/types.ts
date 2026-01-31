@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 import { assertNever } from "src/utils/util"
+import { Env } from "src/env"
 
 export type NodeData = {
   Profile: UserProfile
@@ -95,7 +96,7 @@ export const featureDescription = (f: Feature) => {
     case "use-exit-node":
       return "Using an exit node"
     case "ssh":
-      return "Running a Tailscale SSH server"
+      return "Running a " + Env.appName + " SSH server"
     case "auto-update":
       return "Auto updating client versions"
     default:

@@ -106,7 +106,7 @@ func Run(args []string) (err error) {
 	var warnOnce sync.Once
 	tailscale.SetVersionMismatchHandler(func(clientVer, serverVer string) {
 		warnOnce.Do(func() {
-			fmt.Fprintf(Stderr, "Warning: client version %q != tailscaled server version %q\n", clientVer, serverVer)
+			fmt.Fprintf(Stderr, "Warning: client version %q != cylonixd server version %q\n", clientVer, serverVer)
 		})
 	})
 
@@ -156,7 +156,7 @@ func Run(args []string) (err error) {
 
 	err = rootCmd.Run(context.Background())
 	if tailscale.IsAccessDeniedError(err) && os.Getuid() != 0 && runtime.GOOS != "windows" {
-		return fmt.Errorf("%v\n\nUse 'sudo tailscale %s' or 'tailscale up --operator=$USER' to not require root.", err, strings.Join(args, " "))
+		return fmt.Errorf("%v\n\nUse 'sudo cylonix %s' or 'cylonix up --operator=$USER' to not require root.", err, strings.Join(args, " "))
 	}
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
@@ -165,8 +165,8 @@ func Run(args []string) (err error) {
 }
 
 func newRootCmd() *ffcli.Command {
-	rootfs := newFlagSet("tailscale")
-	rootfs.Func("socket", "path to tailscaled socket", func(s string) error {
+	rootfs := newFlagSet("cylonix")
+	rootfs.Func("socket", "path to cylonixd socket", func(s string) error {
 		localClient.Socket = s
 		localClient.UseSocketOnly = true
 		return nil
@@ -174,11 +174,11 @@ func newRootCmd() *ffcli.Command {
 	rootfs.Lookup("socket").DefValue = localClient.Socket
 
 	rootCmd := &ffcli.Command{
-		Name:       "tailscale",
-		ShortUsage: "tailscale [flags] <subcommand> [command flags]",
+		Name:       "cylonix",
+		ShortUsage: "cylonix [flags] <subcommand> [command flags]",
 		ShortHelp:  "The easiest, most secure way to use WireGuard.",
 		LongHelp: strings.TrimSpace(`
-For help on subcommands, add --help after: "tailscale status --help".
+For help on subcommands, add --help after: "cylonix status --help".
 
 This CLI is still under active development. Commands and flags will
 change in the future.
@@ -221,7 +221,7 @@ change in the future.
 		FlagSet: rootfs,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) > 0 {
-				return fmt.Errorf("tailscale: unknown subcommand: %s", args[0])
+				return fmt.Errorf("cylonix: unknown subcommand: %s", args[0])
 			}
 			return flag.ErrHelp
 		},

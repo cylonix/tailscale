@@ -47,13 +47,13 @@ a partial URL (e.g., localhost:3000), or a full URL including a path (e.g., http
 
 EXAMPLES
   - Expose an HTTP server running at 127.0.0.1:3000 in the foreground:
-    $ tailscale %[1]s 3000
+    $ cylonix %[1]s 3000
 
   - Expose an HTTP server running at 127.0.0.1:3000 in the background:
-    $ tailscale %[1]s --bg 3000
+    $ cylonix %[1]s --bg 3000
 
   - Expose an HTTPS server with invalid or self-signed certificates at https://localhost:8443
-    $ tailscale %[1]s https+insecure://localhost:8443
+    $ cylonix %[1]s https+insecure://localhost:8443
 
 For more examples and use cases visit our docs site https://tailscale.com/kb/1247/funnel-serve-use-cases
 `)
@@ -77,18 +77,18 @@ const (
 var infoMap = map[serveMode]commandInfo{
 	serve: {
 		Name:      "serve",
-		ShortHelp: "Serve content and local servers on your tailnet",
+		ShortHelp: "Serve content and local servers on your mesh network",
 		LongHelp: strings.Join([]string{
-			"Tailscale Serve enables you to share a local server securely within your tailnet.\n",
-			"To share a local server on the internet, use `tailscale funnel`\n\n",
+			"Cylonix Serve enables you to share a local server securely within your mesh network.\n",
+			"To share a local server on the internet, use `cylonix funnel`\n\n",
 		}, "\n"),
 	},
 	funnel: {
 		Name:      "funnel",
 		ShortHelp: "Serve content and local servers on the internet",
 		LongHelp: strings.Join([]string{
-			"Funnel enables you to share a local server on the internet using Tailscale.\n",
-			"To share only within your tailnet, use `tailscale serve`\n\n",
+			"Funnel enables you to share a local server on the internet using Cylonix.\n",
+			"To share only within your mesh network, use `cylonix serve`\n\n",
 		}, "\n"),
 	},
 }
@@ -96,7 +96,7 @@ var infoMap = map[serveMode]commandInfo{
 // errHelpFunc is standard error text that prompts users to
 // run `$subcmd --help` for information on how to use serve.
 var errHelpFunc = func(m serveMode) error {
-	return fmt.Errorf("try `tailscale %s --help` for usage info", infoMap[m].Name)
+	return fmt.Errorf("try `cylonix %s --help` for usage info", infoMap[m].Name)
 }
 
 // newServeV2Command returns a new "serve" subcommand using e as its environment.
@@ -111,9 +111,9 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 		Name:      info.Name,
 		ShortHelp: info.ShortHelp,
 		ShortUsage: strings.Join([]string{
-			fmt.Sprintf("tailscale %s <target>", info.Name),
-			fmt.Sprintf("tailscale %s status [--json]", info.Name),
-			fmt.Sprintf("tailscale %s reset", info.Name),
+			fmt.Sprintf("cylonix %s <target>", info.Name),
+			fmt.Sprintf("cylonix %s status [--json]", info.Name),
+			fmt.Sprintf("cylonix %s reset", info.Name),
 		}, "\n"),
 		LongHelp: info.LongHelp + fmt.Sprintf(strings.TrimSpace(serveHelpCommon), info.Name),
 		Exec:     e.runServeCombined(subcmd),
@@ -133,7 +133,7 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 		Subcommands: []*ffcli.Command{
 			{
 				Name:       "status",
-				ShortUsage: "tailscale " + info.Name + " status [--json]",
+				ShortUsage: "cylonix " + info.Name + " status [--json]",
 				Exec:       e.runServeStatus,
 				ShortHelp:  "View current " + info.Name + " configuration",
 				FlagSet: e.newFlags("serve-status", func(fs *flag.FlagSet) {
@@ -142,7 +142,7 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 			},
 			{
 				Name:       "reset",
-				ShortUsage: "tailscale " + info.Name + " reset",
+				ShortUsage: "cylonix " + info.Name + " reset",
 				ShortHelp:  "Reset current " + info.Name + " config",
 				Exec:       e.runServeReset,
 				FlagSet:    e.newFlags("serve-reset", nil),
@@ -331,7 +331,7 @@ func (e *serveEnv) runServeCombined(subcmd serveMode) execFunc {
 	}
 }
 
-const backgroundExistsMsg = "background configuration already exists, use `tailscale %s --%s=%d off` to remove the existing configuration"
+const backgroundExistsMsg = "background configuration already exists, use `cylonix %s --%s=%d off` to remove the existing configuration"
 
 func (e *serveEnv) validateConfig(sc *ipn.ServeConfig, port uint16, wantServe serveType) error {
 	sc, isFg := sc.FindConfig(port)
@@ -396,9 +396,9 @@ func (e *serveEnv) setServe(sc *ipn.ServeConfig, st *ipnstate.Status, dnsName st
 
 var (
 	msgFunnelAvailable     = "Available on the internet:"
-	msgServeAvailable      = "Available within your tailnet:"
+	msgServeAvailable      = "Available within your mesh network:"
 	msgRunningInBackground = "%s started and running in the background."
-	msgDisableProxy        = "To disable the proxy, run: tailscale %s --%s=%d off"
+	msgDisableProxy        = "To disable the proxy, run: cylonix %s --%s=%d off"
 	msgToExit              = "Press Ctrl+C to exit."
 )
 
@@ -496,7 +496,7 @@ func (e *serveEnv) applyWebServe(sc *ipn.ServeConfig, dnsName string, srvPort ui
 	case filepath.IsAbs(target):
 		if version.IsMacAppStore() || version.IsMacSys() {
 			// The Tailscale network extension cannot serve arbitrary paths on macOS due to sandbox restrictions (2024-03-26)
-			return errors.New("Path serving is not supported on macOS due to sandbox restrictions. To use Tailscale Serve on macOS, switch to the open-source tailscaled distribution. See https://tailscale.com/kb/1065/macos-variants for more information.")
+			return errors.New("Path serving is not supported on macOS due to sandbox restrictions. To use Cylonix Serve on macOS, switch to the open-source cylonixd distribution. See https://tailscale.com/kb/1065/macos-variants for more information.")
 		}
 
 		target = filepath.Clean(target)
@@ -680,7 +680,7 @@ func isLegacyInvocation(subcmd serveMode, args []string) (string, bool) {
 		return "", false
 	}
 
-	cmd := []string{"tailscale", "serve", "--bg"}
+	cmd := []string{"cylonix", "serve", "--bg"}
 	switch srcType {
 	case "https":
 		// In the new code, we default to https:443,

@@ -28,12 +28,11 @@ import (
 
 var setCmd = &ffcli.Command{
 	Name:       "set",
-	ShortUsage: "tailscale set [flags]",
+	ShortUsage: "cylonix set [flags]",
 	ShortHelp:  "Change specified preferences",
-	LongHelp: `"tailscale set" allows changing specific preferences.
+	LongHelp: `"cylonix set" allows changing specific preferences.
 
-Unlike "tailscale up", this command does not require the complete set of desired settings.
-
+Unlike "cylonix up", this command does not require the complete set of desired settings.
 Only settings explicitly mentioned will be set. There are no default values.`,
 	FlagSet:   setFlagSet,
 	Exec:      runSet,
@@ -68,20 +67,20 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	setf := newFlagSet("set")
 
 	setf.StringVar(&setArgs.profileName, "nickname", "", "nickname for the current account")
-	setf.BoolVar(&setArgs.acceptRoutes, "accept-routes", false, "accept routes advertised by other Tailscale nodes")
+	setf.BoolVar(&setArgs.acceptRoutes, "accept-routes", false, "accept routes advertised by other Cylonix nodes")
 	setf.BoolVar(&setArgs.acceptDNS, "accept-dns", false, "accept DNS configuration from the admin panel")
-	setf.StringVar(&setArgs.exitNodeIP, "exit-node", "", "Tailscale exit node (IP or base name) for internet traffic, or empty string to not use an exit node")
+	setf.StringVar(&setArgs.exitNodeIP, "exit-node", "", "Cylonix exit node (IP or base name) for internet traffic, or empty string to not use an exit node")
 	setf.BoolVar(&setArgs.exitNodeAllowLANAccess, "exit-node-allow-lan-access", false, "Allow direct access to the local network when routing traffic via an exit node")
 	setf.BoolVar(&setArgs.shieldsUp, "shields-up", false, "don't allow incoming connections")
-	setf.BoolVar(&setArgs.runSSH, "ssh", false, "run an SSH server, permitting access per tailnet admin's declared policy")
+	setf.BoolVar(&setArgs.runSSH, "ssh", false, "run an SSH server, permitting access per mesh network admin's declared policy")
 	setf.StringVar(&setArgs.hostname, "hostname", "", "hostname to use instead of the one provided by the OS")
 	setf.StringVar(&setArgs.advertiseRoutes, "advertise-routes", "", "routes to advertise to other nodes (comma-separated, e.g. \"10.0.0.0/8,192.168.0.0/24\") or empty string to not advertise routes")
-	setf.BoolVar(&setArgs.advertiseDefaultRoute, "advertise-exit-node", false, "offer to be an exit node for internet traffic for the tailnet")
-	setf.BoolVar(&setArgs.advertiseConnector, "advertise-connector", false, "offer to be an app connector for domain specific internet traffic for the tailnet")
-	setf.BoolVar(&setArgs.updateCheck, "update-check", true, "notify about available Tailscale updates")
+	setf.BoolVar(&setArgs.advertiseDefaultRoute, "advertise-exit-node", false, "offer to be an exit node for internet traffic for the mesh network")
+	setf.BoolVar(&setArgs.advertiseConnector, "advertise-connector", false, "offer to be an app connector for domain specific internet traffic for the mesh network")
+	setf.BoolVar(&setArgs.updateCheck, "update-check", true, "notify about available Cylonix updates")
 	setf.BoolVar(&setArgs.updateApply, "auto-update", false, "automatically update to the latest available version")
 	setf.BoolVar(&setArgs.postureChecking, "posture-checking", false, hidden+"allow management plane to gather device posture information")
-	setf.BoolVar(&setArgs.runWebClient, "webclient", false, "expose the web interface for managing this node over Tailscale at port 5252")
+	setf.BoolVar(&setArgs.runWebClient, "webclient", false, "expose the web interface for managing this node over Cylonix at port 5252")
 
 	ffcomplete.Flag(setf, "exit-node", func(args []string) ([]string, ffcomplete.ShellCompDirective, error) {
 		st, err := localClient.Status(context.Background())
@@ -99,7 +98,7 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 	})
 
 	if safesocket.GOOSUsesPeerCreds(goos) {
-		setf.StringVar(&setArgs.opUser, "operator", "", "Unix username to allow to operate on tailscaled without sudo")
+		setf.StringVar(&setArgs.opUser, "operator", "", "Unix username to allow to operate on cylonixd without sudo")
 	}
 	switch goos {
 	case "linux":
@@ -107,7 +106,7 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
 		setf.BoolVar(&setArgs.statefulFiltering, "stateful-filtering", false, "apply stateful filtering to forwarded packets (subnet routers, exit nodes, etc.)")
 		setf.StringVar(&setArgs.netfilterMode, "netfilter-mode", defaultNetfilterMode(), "netfilter mode (one of on, nodivert, off)")
 	case "windows":
-		setf.BoolVar(&setArgs.forceDaemon, "unattended", false, "run in \"Unattended Mode\" where Tailscale keeps running even after the current GUI user logs out (Windows-only)")
+		setf.BoolVar(&setArgs.forceDaemon, "unattended", false, "run in \"Unattended Mode\" where Cylonix keeps running even after the current GUI user logs out (Windows-only)")
 	}
 
 	registerAcceptRiskFlag(setf, &setArgs.acceptedRisks)

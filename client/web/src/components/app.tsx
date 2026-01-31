@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 import React from "react"
-import TailscaleIcon from "src/assets/icons/tailscale-icon.svg?react"
 import LoginToggle from "src/components/login-toggle"
 import DeviceDetailsView from "src/components/views/device-details-view"
 import DisconnectedView from "src/components/views/disconnected-view"
@@ -18,6 +17,7 @@ import EmptyState from "src/ui/empty-state"
 import LoadingDots from "src/ui/loading-dots"
 import useSWR from "swr"
 import { Link, Route, Router, Switch, useLocation } from "wouter"
+import { Logo } from "src/env"
 
 export default function App() {
   const { data: auth, loading: loadingAuth, newSession } = useAuth()
@@ -145,7 +145,7 @@ function Header({
     <>
       <div className="flex flex-wrap gap-4 justify-between items-center mb-9 md:mb-12">
         <Link to="/" className="flex gap-3 overflow-hidden">
-          <TailscaleIcon />
+          <Logo className="inline-block" width={32} height={32} />
           <div className="inline text-gray-800 text-lg font-medium leading-snug truncate">
             {node.DomainName}
           </div>

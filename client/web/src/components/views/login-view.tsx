@@ -3,9 +3,9 @@
 
 import React from "react"
 import { useAPI } from "src/api"
-import TailscaleIcon from "src/assets/icons/tailscale-icon.svg?react"
 import { NodeData } from "src/types"
 import Button from "src/ui/button"
+import { Env, Logo } from "src/env"
 
 /**
  * LoginView is rendered when the client is not authenticated
@@ -16,13 +16,13 @@ export default function LoginView({ data }: { data: NodeData }) {
 
   return (
     <div className="mb-8 py-6 px-8 bg-white rounded-md shadow-2xl">
-      <TailscaleIcon className="my-2 mb-8" />
+      <Logo className="my-2 mb-8" width={128} height={128} />
       {data.Status === "Stopped" ? (
         <>
           <div className="mb-6">
             <h3 className="text-3xl font-semibold mb-3">Connect</h3>
             <p className="text-gray-700">
-              Your device is disconnected from Tailscale.
+              Your device is disconnected from {Env.appName}.
             </p>
           </div>
           <Button
@@ -30,7 +30,7 @@ export default function LoginView({ data }: { data: NodeData }) {
             className="w-full mb-4"
             intent="primary"
           >
-            Connect to Tailscale
+            Connect to {Env.appName}
           </Button>
         </>
       ) : data.IPv4 ? (
@@ -38,7 +38,7 @@ export default function LoginView({ data }: { data: NodeData }) {
           <div className="mb-6">
             <p className="text-gray-700">
               Your device’s key has expired. Reauthenticate this device by
-              logging in again, or{" "}
+              signing in again, or{" "}
               <a
                 href="https://tailscale.com/kb/1028/key-expiry"
                 className="link"
@@ -52,7 +52,12 @@ export default function LoginView({ data }: { data: NodeData }) {
           </div>
           <Button
             onClick={() =>
-              api({ action: "up", data: { Reauthenticate: true } })
+              api({
+                action: "up", data: {
+                  Reauthenticate: true,
+                  ControlURL: `${Env.controlURL}`
+                }
+              })
             }
             className="w-full mb-4"
             intent="primary"
@@ -63,17 +68,17 @@ export default function LoginView({ data }: { data: NodeData }) {
       ) : (
         <>
           <div className="mb-6">
-            <h3 className="text-3xl font-semibold mb-3">Log in</h3>
+            <h3 className="text-3xl font-semibold mb-3">Sign in</h3>
             <p className="text-gray-700">
-              Get started by logging in to your Tailscale network.
+              Get started by logging in to your {Env.appName} network.
               Or,&nbsp;learn&nbsp;more at{" "}
               <a
-                href="https://tailscale.com/"
+                href={Env.website}
                 className="link"
                 target="_blank"
                 rel="noreferrer"
               >
-                tailscale.com
+                {Env.website}
               </a>
               .
             </p>
@@ -84,13 +89,14 @@ export default function LoginView({ data }: { data: NodeData }) {
                 action: "up",
                 data: {
                   Reauthenticate: true,
+                  ControlURL: `${Env.controlURL}`
                 },
               })
             }
             className="w-full mb-4"
             intent="primary"
           >
-            Log In
+            Sign In
           </Button>
         </>
       )}

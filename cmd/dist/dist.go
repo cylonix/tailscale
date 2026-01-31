@@ -13,6 +13,7 @@ import (
 
 	"tailscale.com/release/dist"
 	"tailscale.com/release/dist/cli"
+	cysynolo "tailscale.com/release/dist/cylonix-synology" // __CYLONIX_ADD__
 	"tailscale.com/release/dist/qnap"
 	"tailscale.com/release/dist/synology"
 	"tailscale.com/release/dist/unixpkgs"
@@ -42,6 +43,7 @@ func getTargets() ([]dist.Target, error) {
 	// To build for package center, run
 	// ./tool/go run ./cmd/dist build --synology-package-center synology
 	ret = append(ret, synology.Targets(synologyPackageCenter, nil)...)
+	ret = append(ret, cysynolo.Targets(synologyPackageCenter, nil)...) // __CYLONIX_ADD__
 	if (qnapPrivateKeyPath == "") != (qnapCertificatePath == "") {
 		return nil, errors.New("both --qnap-private-key-path and --qnap-certificate-path must be set")
 	}

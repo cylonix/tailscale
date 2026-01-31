@@ -288,7 +288,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			// This hash corresponds to the inline script in index.html that runs when the react app is unavailable.
 			// It was generated from https://csplite.com/csp/sha/.
 			// If the contents of the script are changed, this hash must be updated.
-			const indexScriptHash = "sha384-CW2AYVfS14P7QHZN27thEkMLKiCj3YNURPoLc1elwiEkMVHeuYTWkJOEki1F3nZc"
+			const indexScriptHash = "sha384-bYmT2MZuS0uK7jbeccfeMnkUIMk8lWUTS7wHYXmf7ja0z3DpgO7RMhJW3uGtnEC8"
 
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src * data:; script-src 'self' '"+indexScriptHash+"'")
@@ -1280,7 +1280,7 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 // If the server is running in CGI mode, the key is cached to disk and reused between requests.
 // If an error occurs during key storage, the error is logged and the active process terminated.
 func (s *Server) csrfKey() []byte {
-	csrfFile := filepath.Join(os.TempDir(), "tailscale-web-csrf.key")
+	csrfFile := filepath.Join(os.TempDir(), "cylonix-web-csrf.key") // __CYLONIX_MOD__
 
 	// if running in CGI mode, try to read from disk, but ignore errors
 	if s.cgiMode {

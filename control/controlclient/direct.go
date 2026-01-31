@@ -539,7 +539,7 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 	} else {
 		if expired {
 			c.logf("Old key expired -> regen=true")
-			systemd.Status("key expired; run 'tailscale up' to authenticate")
+			systemd.Status("key expired; run 'cylonix up' to authenticate") // __CYLONIX_MOD__
 			regen = true
 		}
 		if (opt.Flags & LoginInteractive) != 0 {
@@ -576,6 +576,7 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 	}
 
 	if serverNoiseKey.IsZero() {
+		c.logf("control server is too old; no noise key")
 		return false, "", nil, errors.New("control server is too old; no noise key")
 	}
 

@@ -26,33 +26,32 @@ import (
 
 var sshCmd = &ffcli.Command{
 	Name:       "ssh",
-	ShortUsage: "tailscale ssh [user@]<host> [args...]",
-	ShortHelp:  "SSH to a Tailscale machine",
+	ShortUsage: "cylonix ssh [user@]<host> [args...]",
+	ShortHelp:  "SSH to a Cylonix machine",
 	LongHelp: strings.TrimSpace(`
 
-The 'tailscale ssh' command is an optional wrapper around the system 'ssh'
-command that's useful in some cases. Tailscale SSH does not require its use;
-most users running the Tailscale SSH server will prefer to just use the normal
+The 'cylonix ssh' command is an optional wrapper around the system 'ssh'
+command that's useful in some cases. Cylonix SSH does not require its use;
+most users running the Cylonix SSH server will prefer to just use the normal
 'ssh' command or their normal SSH client.
 
-The 'tailscale ssh' wrapper adds a few things:
-
+The 'cylonix ssh' wrapper adds a few things:
 * It resolves the destination server name in its arguments using MagicDNS,
   even if --accept-dns=false.
 * It works in userspace-networking mode, by supplying a ProxyCommand to the
-  system 'ssh' command that connects via a pipe through tailscaled.
+  system 'ssh' command that connects via a pipe through cylonixd.
 * It automatically checks the destination server's SSH host key against the
-  node's SSH host key as advertised via the Tailscale coordination server.
+  node's SSH host key as advertised via the Cylonix coordination server.
 `),
 	Exec: runSSH,
 }
 
 func runSSH(ctx context.Context, args []string) error {
 	if runtime.GOOS == "darwin" && version.IsMacAppStore() && !envknob.UseWIPCode() {
-		return errors.New("The 'tailscale ssh' subcommand is not available on macOS builds distributed through the App Store or TestFlight.\nInstall the Standalone variant of Tailscale (download it from https://pkgs.tailscale.com), or use the regular 'ssh' client instead.")
+		return errors.New("The 'cylonix ssh' subcommand is not available on macOS builds distributed through the App Store or TestFlight.\nInstall the Standalone variant of Cylonix (download it from https://pkgs.cylonix.com), or use the regular 'ssh' client instead.")
 	}
 	if len(args) == 0 {
-		return errors.New("usage: tailscale ssh [user@]<host>")
+		return errors.New("usage: cylonix ssh [user@]<host>")
 	}
 	arg, argRest := args[0], args[1:]
 	username, host, ok := strings.Cut(arg, "@")

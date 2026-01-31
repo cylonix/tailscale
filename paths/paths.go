@@ -36,10 +36,10 @@ func DefaultTailscaledSocket() string {
 	switch distro.Get() {
 	case distro.Synology:
 		if distro.DSMVersion() == 6 {
-			return "/var/packages/Tailscale/etc/tailscaled.sock"
+			return "/var/packages/Cylonix/etc/cylonixd.sock" // __CYLONIX_MOD__
 		}
 		// DSM 7 (and higher? or failure to detect.)
-		return "/var/packages/Tailscale/var/tailscaled.sock"
+		return "/var/packages/Cylonix/var/cylonixd.sock" // __CYLONIX_MOD__
 	case distro.Gokrazy:
 		return "/perm/tailscaled/tailscaled.sock"
 	case distro.QNAP:
