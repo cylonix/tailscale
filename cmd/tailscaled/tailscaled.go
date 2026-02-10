@@ -89,7 +89,7 @@ func defaultTunName() string {
 		case distro.Synology:
 			// Try TUN, but fall back to userspace networking if needed.
 			// See https://github.com/tailscale/tailscale-synology/issues/35
-			return "tailscale0,userspace-networking"
+			return "cylonix0,userspace-networking" // __CYLONIX_MOD__
 		}
 
 	}

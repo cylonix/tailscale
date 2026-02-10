@@ -7,5 +7,5 @@ package dns
 
 const (
 	resolvConf = "/etc/resolv.conf"
-	backupConf = "/etc/resolv.pre-tailscale-backup.conf"
+	backupConf = "/etc/resolv.pre-cylonix-backup.conf" // __CYLONIX__MOD__
 )

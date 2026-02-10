@@ -887,8 +887,157 @@ func (h *peerAPIHandler) replyToDNSQueries() bool {
 	return verdict == filter.Accept
 }
 
+// __BEGIN_CYLONIX_ADD__
 // handleDNSQuery implements a DoH server (RFC 8484) over the peerapi.
 // It's not over HTTPS as the spec dictates, but rather HTTP-over-WireGuard.
+// selfHasIPv6 reports whether this node has a Tailscale IPv6 address.
+func (h *peerAPIHandler) selfHasIPv6() bool {
+	if !h.selfNode.Valid() {
+		return false
+	}
+	addrs := h.selfNode.Addresses()
+	for i := range addrs.Len() {
+		if addrs.At(i).Addr().Is6() {
+			return true
+		}
+	}
+	return false
+}
+
+// filterAAAARecords returns a copy of the DNS response with all AAAA
+// resource records removed from the answer and additional sections.
+// It operates directly on the DNS wire format bytes, splicing out AAAA
+// RRs and updating the section counts in the header.
+//
+// This is used when the exit node has no Tailscale IPv6 address,
+// meaning IPv6 traffic cannot traverse the WireGuard tunnel.
+func filterAAAARecords(msg []byte) ([]byte, error) {
+	if len(msg) < 12 {
+		return msg, fmt.Errorf("DNS message too short: %d bytes", len(msg))
+	}
+	// DNS header layout (RFC 1035 §4.1.1):
+	//   Bytes 0-1:  ID
+	//   Bytes 2-3:  Flags
+	//   Bytes 4-5:  QDCOUNT (question count)
+	//   Bytes 6-7:  ANCOUNT (answer count)
+	//   Bytes 8-9:  NSCOUNT (authority count)
+	//   Bytes 10-11: ARCOUNT (additional count)
+	out := make([]byte, len(msg))
+	copy(out, msg)
+
+	qdCount := int(out[4])<<8 | int(out[5])
+	anCount := int(out[6])<<8 | int(out[7])
+	nsCount := int(out[8])<<8 | int(out[9])
+	arCount := int(out[10])<<8 | int(out[11])
+
+	off := 12
+
+	// Skip over questions.
+	for i := 0; i < qdCount; i++ {
+		off = skipDNSName(out, off)
+		if off < 0 || off+4 > len(out) {
+			return msg, fmt.Errorf("failed to skip question %d/%d at offset %d", i, qdCount, off)
+		}
+		off += 4 // QTYPE(2) + QCLASS(2)
+	}
+
+	// Filter AAAA from answer section.
+	var err error
+	off, anCount, err = filterAAAASection(out, off, anCount)
+	if err != nil {
+		return msg, fmt.Errorf("filtering answer section: %w", err)
+	}
+
+	// Skip authority section (don't filter, rarely has AAAA).
+	for i := 0; i < nsCount; i++ {
+		off = skipDNSRR(out, off)
+		if off < 0 {
+			return msg, fmt.Errorf("failed to skip authority RR %d/%d", i, nsCount)
+		}
+	}
+
+	// Filter AAAA from additional section.
+	off, arCount, err = filterAAAASection(out, off, arCount)
+	if err != nil {
+		return msg, fmt.Errorf("filtering additional section: %w", err)
+	}
+
+	// Update counts in header.
+	out[6] = byte(anCount >> 8)
+	out[7] = byte(anCount)
+	out[10] = byte(arCount >> 8)
+	out[11] = byte(arCount)
+	return out[:off], nil
+}
+
+// filterAAAASection walks count RRs starting at off in buf, removes any
+// AAAA (type 28) records by shifting subsequent bytes forward, and returns
+// the new offset and updated count. Returns an error on parse failure.
+func filterAAAASection(buf []byte, off, count int) (newOff, newCount int, err error) {
+	for i := 0; i < count; i++ {
+		rrStart := off
+		nameEnd := skipDNSName(buf, off)
+		if nameEnd < 0 || nameEnd+10 > len(buf) {
+			return -1, 0, fmt.Errorf("failed to parse RR name at offset %d (RR %d/%d)", off, i, count)
+		}
+		rrType := int(buf[nameEnd])<<8 | int(buf[nameEnd+1])
+		rdLen := int(buf[nameEnd+8])<<8 | int(buf[nameEnd+9])
+		rrEnd := nameEnd + 10 + rdLen
+		if rrEnd > len(buf) {
+			return -1, 0, fmt.Errorf("RR %d/%d extends past buffer: offset %d + rdlen %d > %d", i, count, nameEnd+10, rdLen, len(buf))
+		}
+		if rrType == 28 { // AAAA
+			// Remove this RR by shifting everything after it forward.
+			copy(buf[rrStart:], buf[rrEnd:])
+			buf = buf[:len(buf)-(rrEnd-rrStart)]
+			count--
+			i-- // re-examine this index
+			// off stays at rrStart since we shifted data here
+		} else {
+			off = rrEnd
+		}
+	}
+	return off, count, nil
+}
+
+// skipDNSName advances past a DNS name at off in msg, handling both
+// uncompressed labels and compression pointers. Returns -1 on error.
+func skipDNSName(msg []byte, off int) int {
+	for {
+		if off >= len(msg) {
+			return -1
+		}
+		b := msg[off]
+		if b == 0 {
+			return off + 1 // root label
+		}
+		if b&0xC0 == 0xC0 {
+			return off + 2 // compression pointer
+		}
+		if b&0xC0 != 0 {
+			return -1 // reserved
+		}
+		off += 1 + int(b)
+	}
+}
+
+// skipDNSRR advances past a single resource record at off in msg.
+// Returns -1 on error.
+func skipDNSRR(msg []byte, off int) int {
+	off = skipDNSName(msg, off)
+	if off < 0 || off+10 > len(msg) {
+		return -1
+	}
+	rdLen := int(msg[off+8])<<8 | int(msg[off+9])
+	off += 10 + rdLen
+	if off > len(msg) {
+		return -1
+	}
+	return off
+}
+
+// __END_CYLONIX_ADD__
+
 func (h *peerAPIHandler) handleDNSQuery(w http.ResponseWriter, r *http.Request) {
 	if h.ps.resolver == nil {
 		http.Error(w, "DNS not wired up", http.StatusNotImplemented)
@@ -928,6 +1077,26 @@ func (h *peerAPIHandler) handleDNSQuery(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	// If this exit node has no Tailscale IPv6 address, strip AAAA records
+	// from DNS responses. Without an IPv6 address assigned by the control
+	// plane, IPv6 traffic cannot traverse the WireGuard tunnel (the exit
+	// node's WireGuard will drop packets with source IPs not in the peer's
+	// AllowedIPs). Returning AAAA records would cause clients to attempt
+	// IPv6 connections that will always fail.
+	if !h.selfHasIPv6() {
+		if filtered, err := filterAAAARecords(res); err != nil {
+			h.logf("filterAAAARecords: %v", err)
+		} else {
+			if len(filtered) != len(res) {
+				h.logf("filtered out %d bytes of AAAA records from DNS response", len(res)-len(filtered))
+			}
+			res = filtered
+		}
+	}
+	// __END_CYLONIX_ADD__
+
 	// TODO(raggi): consider pushing the integration down into the resolver
 	// instead to avoid re-parsing the DNS response for improved performance in
 	// the future.

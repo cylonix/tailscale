@@ -32,7 +32,7 @@ export type Toaster = {
 type Toast = {
   key?: string // key is a unique string value that ensures only one toast with a given key is shown at a time.
   className?: string
-  variant?: "danger" // styling for the toast, undefined is neutral, danger is for failed requests
+  variant?: "danger" | "success" // styling for the toast, undefined is neutral, danger is for failed requests
   message: React.ReactNode
   timeout?: number
   added?: number // timestamp of when the toast was added
@@ -246,11 +246,12 @@ const ToastBlock = forwardRef<
       className={cx(
         "transition ease-in-out animate-scale-in",
         "bottom-0 right-0 z-[99] w-[85vw] origin-bottom",
-        "sm:min-w-[400px] sm:max-w-[500px]",
+        "sm:min-w-[400px] sm:max-w-[500px] lg:max-w-[800px]",
         "absolute shadow-sm rounded-md text-md flex items-center justify-between",
         {
           "text-white bg-gray-700": variant === undefined,
           "text-white bg-orange-400": variant === "danger",
+          "text-white bg-green-500": variant === "success",
         }
       )}
       aria-live="polite"

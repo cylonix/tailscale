@@ -86,6 +86,12 @@ pushspk: spk ## Push and install synology package on ${SYNO_HOST} host
 	scp tailscale.spk root@${SYNO_HOST}:
 	ssh root@${SYNO_HOST} /usr/syno/bin/synopkg install tailscale.spk
 
+QNAP_ARCH ?= x86_64
+qpkg: ## Build QNAP package for ${QNAP_ARCH} architecture
+	./tool/go run ./cmd/dist build cylonix-qnap/${QNAP_ARCH}
+qpkg-all: ## Build QNAP packages for all architectures
+	./tool/go run ./cmd/dist build cylonix-qnap
+
 publishdevimage: ## Build and publish tailscale image to location specified by ${REPO}
 	@test -n "${REPO}" || (echo "REPO=... required; e.g. REPO=ghcr.io/${USER}/tailscale" && exit 1)
 	@test "${REPO}" != "tailscale/tailscale" || (echo "REPO=... must not be tailscale/tailscale" && exit 1)

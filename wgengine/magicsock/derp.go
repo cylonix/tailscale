@@ -42,6 +42,29 @@ import (
 // preferredDERPFrameTime, so update with care.
 const frameReceiveRecordRate = 5 * time.Second
 
+// __BEGIN_CYLONIX_ADD__
+// regionHasXRayUnderlay reports whether any DERP node in the given region
+// is configured with an xray underlay tunnel.
+//
+// c.mu does not need to be held; this reads from derpMapAtomic.
+func (c *Conn) regionHasXRayUnderlay(regionID int) bool {
+	dm := c.derpMapAtomic.Load()
+	if dm == nil {
+		return false
+	}
+	r, ok := dm.Regions[regionID]
+	if !ok {
+		return false
+	}
+	for _, n := range r.Nodes {
+		if derphttp.WantsXRayUnderlay(n) {
+			return true
+		}
+	}
+	return false
+}
+// __END_CYLONIX_ADD__
+
 // derpRoute is a route entry for a public key, saying that a certain
 // peer should be available at DERP regionID, as long as the
 // current connection for that regionID is dc. (but dc should not be
@@ -348,6 +371,27 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan<- 
 	// below when we have both.)
 	ad, ok := c.activeDerp[regionID]
 	if ok {
+		// __BEGIN_CYLONIX_ADD__
+		// If our home DERP has xray underlay and the peer's home does not,
+		// prefer sending via our xray home when the peer has been seen there.
+		// This ensures both directions of traffic use the xray tunnel for
+		// censorship resistance. The peer connects to our home DERP to send
+		// packets to us, so we can piggyback on that connection for our
+		// outgoing traffic too. On first contact, we still use the peer's
+		// home (here) until the peer shows up on our xray DERP.
+		if !peer.IsZero() && c.myDerp != 0 && regionID != c.myDerp &&
+			c.regionHasXRayUnderlay(c.myDerp) && !c.regionHasXRayUnderlay(regionID) {
+			if r, ok := c.derpRoute[peer]; ok && r.regionID == c.myDerp {
+				if xrayAd, ok := c.activeDerp[c.myDerp]; ok && xrayAd.c == r.dc {
+					c.logf("[v1] magicsock: derp: preferring xray derp-%d over peer home derp-%d for %s",
+						c.myDerp, regionID, peer.ShortString())
+					c.setPeerLastDerpLocked(peer, c.myDerp, regionID)
+					*xrayAd.lastWrite = time.Now()
+					return xrayAd.writeCh
+				}
+			}
+		}
+		// __END_CYLONIX_ADD__
 		*ad.lastWrite = time.Now()
 		c.setPeerLastDerpLocked(peer, regionID, regionID)
 		return ad.writeCh
@@ -359,12 +403,28 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan<- 
 	// perhaps peer's home is Frankfurt, but they dialed our home DERP
 	// node in SF to reach us, so we can reply to them using our
 	// SF connection rather than dialing Frankfurt. (Issue 150)
+	//
+	// However, don't use this shortcut if regionID (peer's home) has
+	// xray underlay and the cached route does not. In that case we
+	// want to open a new connection to the xray region rather than
+	// reuse a non-xray path.
 	if !peer.IsZero() {
 		if r, ok := c.derpRoute[peer]; ok {
 			if ad, ok := c.activeDerp[r.regionID]; ok && ad.c == r.dc {
-				c.setPeerLastDerpLocked(peer, r.regionID, regionID)
-				*ad.lastWrite = time.Now()
-				return ad.writeCh
+				// __BEGIN_CYLONIX_MOD__
+				useRoute := true
+				if r.regionID != regionID &&
+					c.regionHasXRayUnderlay(regionID) && !c.regionHasXRayUnderlay(r.regionID) {
+					c.logf("[v1] magicsock: derp: skipping non-xray route derp-%d, connecting to xray derp-%d for %s",
+						r.regionID, regionID, peer.ShortString())
+					useRoute = false
+				}
+				if useRoute {
+					c.setPeerLastDerpLocked(peer, r.regionID, regionID)
+					*ad.lastWrite = time.Now()
+					return ad.writeCh
+				}
+				// __END_CYLONIX_MOD__
 			}
 		}
 	}

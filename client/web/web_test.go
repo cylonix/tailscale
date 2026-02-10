@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
@@ -21,7 +20,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/gorilla/csrf"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
@@ -121,6 +119,7 @@ func TestServeAPI(t *testing.T) {
 	go localapi.Serve(lal)
 
 	s := &Server{
+		logf:    t.Logf,
 		mode:    ManageServerMode,
 		lc:      &tailscale.LocalClient{Dial: lal.Dial},
 		timeNow: time.Now,
@@ -289,6 +288,7 @@ func TestGetTailscaleBrowserSession(t *testing.T) {
 	go localapi.Serve(lal)
 
 	s := &Server{
+		logf:    t.Logf,
 		timeNow: time.Now,
 		lc:      &tailscale.LocalClient{Dial: lal.Dial},
 	}
@@ -458,6 +458,7 @@ func TestAuthorizeRequest(t *testing.T) {
 	go localapi.Serve(lal)
 
 	s := &Server{
+		logf:    t.Logf,
 		mode:    ManageServerMode,
 		lc:      &tailscale.LocalClient{Dial: lal.Dial},
 		timeNow: time.Now,
@@ -573,6 +574,7 @@ func TestServeAuth(t *testing.T) {
 	sixtyDaysAgo := timeNow.Add(-sessionCookieExpiry * 2)
 
 	s := &Server{
+		logf:        t.Logf,
 		mode:        ManageServerMode,
 		lc:          &tailscale.LocalClient{Dial: lal.Dial},
 		timeNow:     func() time.Time { return timeNow },
@@ -915,6 +917,7 @@ func TestServeAPIAuthMetricLogging(t *testing.T) {
 	oneHourAgo := timeNow.Add(-time.Hour)
 
 	s := &Server{
+		logf:        t.Logf,
 		mode:        ManageServerMode,
 		lc:          &tailscale.LocalClient{Dial: lal.Dial},
 		timeNow:     func() time.Time { return timeNow },
@@ -1481,81 +1484,109 @@ func mockWaitAuthURL(_ context.Context, id string, src tailcfg.NodeID) (*tailcfg
 }
 
 func TestCSRFProtect(t *testing.T) {
-	s := &Server{}
+	s := &Server{logf: t.Logf}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /test/csrf-token", func(w http.ResponseWriter, r *http.Request) {
-		token := csrf.Token(r)
-		_, err := io.WriteString(w, token)
-		if err != nil {
-			t.Fatal(err)
+	h := s.csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/test" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-	})
-	mux.HandleFunc("POST /test/csrf-protected", func(w http.ResponseWriter, r *http.Request) {
 		_, err := io.WriteString(w, "ok")
 		if err != nil {
 			t.Fatal(err)
 		}
-	})
-	h := s.withCSRF(mux)
+	}))
 	ser := httptest.NewServer(h)
 	defer ser.Close()
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("unable to construct cookie jar: %v", err)
-	}
-
 	client := ser.Client()
-	client.Jar = jar
 
-	// make GET request to populate cookie jar
-	resp, err := client.Get(ser.URL + "/test/csrf-token")
-	if err != nil {
-		t.Fatalf("unable to make request: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected status: %v", resp.Status)
-	}
-	tokenBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("unable to read body: %v", err)
-	}
+	t.Run("allows-get", func(t *testing.T) {
+		resp, err := client.Get(ser.URL + "/test")
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
 
-	csrfToken := strings.TrimSpace(string(tokenBytes))
-	if csrfToken == "" {
-		t.Fatal("empty csrf token")
-	}
+	t.Run("allows-sec-fetch-site-same-origin", func(t *testing.T) {
+		req, err := http.NewRequest("POST", ser.URL+"/test", nil)
+		if err != nil {
+			t.Fatalf("error building request: %v", err)
+		}
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
 
-	// make a POST request without the CSRF header; ensure it fails
-	resp, err = client.Post(ser.URL+"/test/csrf-protected", "text/plain", nil)
-	if err != nil {
-		t.Fatalf("unable to make request: %v", err)
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("unexpected status: %v", resp.Status)
-	}
+	t.Run("rejects-sec-fetch-site-cross-site", func(t *testing.T) {
+		req, err := http.NewRequest("POST", ser.URL+"/test", nil)
+		if err != nil {
+			t.Fatalf("error building request: %v", err)
+		}
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
 
-	// make a POST request with the CSRF header; ensure it succeeds
-	req, err := http.NewRequest("POST", ser.URL+"/test/csrf-protected", nil)
-	if err != nil {
-		t.Fatalf("error building request: %v", err)
-	}
-	req.Header.Set("X-CSRF-Token", csrfToken)
-	resp, err = client.Do(req)
-	if err != nil {
-		t.Fatalf("unable to make request: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected status: %v", resp.Status)
-	}
-	defer resp.Body.Close()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("unable to read body: %v", err)
-	}
-	if string(out) != "ok" {
-		t.Fatalf("unexpected body: %q", out)
-	}
+	t.Run("allows-origin-host-match", func(t *testing.T) {
+		req, err := http.NewRequest("POST", ser.URL+"/test", nil)
+		if err != nil {
+			t.Fatalf("error building request: %v", err)
+		}
+		req.Header.Set("Origin", ser.URL)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
+
+	t.Run("rejects-origin-mismatch", func(t *testing.T) {
+		req, err := http.NewRequest("POST", ser.URL+"/test", nil)
+		if err != nil {
+			t.Fatalf("error building request: %v", err)
+		}
+		req.Header.Set("Origin", "http://example.com")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
+
+	t.Run("rejects-missing-origin", func(t *testing.T) {
+		req, err := http.NewRequest("POST", ser.URL+"/test", nil)
+		if err != nil {
+			t.Fatalf("error building request: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("unable to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("unexpected status: %v", resp.Status)
+		}
+	})
 }

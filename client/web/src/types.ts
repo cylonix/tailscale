@@ -21,6 +21,7 @@ export type NodeData = {
   TUNMode: boolean
   IsSynology: boolean
   DSMVersion: number
+  IsQNAP: boolean
   IsUnraid: boolean
   UnraidToken: string
   IPNVersion: string

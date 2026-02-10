@@ -100,6 +100,7 @@ type Client struct {
 	tlsState     *tls.ConnectionState
 	pingOut      map[derp.PingMessage]chan<- bool // chan to send to on pong
 	clock        tstime.Clock
+	xrayInst     xrayInstance // cached xray-core instance for VLESS+REALITY+XHTTP tunnels
 }
 
 // ConnectedState describes the state of a derphttp Client.
@@ -277,7 +278,9 @@ func (c *Client) urlString(node *tailcfg.DERPNode) string {
 		return c.url.String()
 	}
 	proto := "https"
-	if debugUseDERPHTTP() {
+	if debugUseDERPHTTP() || wantsXRayUnderlay(node) {
+		// When behind an xray underlay the DERP server runs plain
+		// HTTP (xray already provides encryption via REALITY).
 		proto = "http"
 	}
 	return fmt.Sprintf("%s://%s/derp", proto, node.HostName)
@@ -431,6 +434,16 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		return nil, 0, err
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	if wantsXRayUnderlay(node) {
+		remaining := "none"
+		if dl, ok := ctx.Deadline(); ok {
+			remaining = time.Until(dl).String()
+		}
+		c.logf("derphttp: xray: dial complete, proceeding to HTTP upgrade (ctx deadline remaining: %s)", remaining)
+	}
+	// __END_CYLONIX_ADD__
+
 	// Now that we have a TCP connection, force close it if the
 	// TLS handshake + DERP setup takes too long.
 	done := make(chan struct{})
@@ -459,7 +472,11 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	var serverPub key.NodePublic // or zero if unknown (if not using TLS or TLS middlebox eats it)
 	var serverProtoVersion int
 	var tlsState *tls.ConnectionState
-	if c.useHTTPS() {
+	if wantsXRayUnderlay(node) {
+		// The xray underlay already provides encryption (REALITY) and
+		// the DERP server behind xray runs plain HTTP, so skip TLS.
+		httpConn = tcpConn
+	} else if c.useHTTPS() {
 		tlsConn := c.tlsClient(tcpConn, node)
 		httpConn = tlsConn
 
@@ -493,7 +510,10 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	brw := bufio.NewReadWriter(bufio.NewReader(httpConn), bufio.NewWriter(httpConn))
 	var derpClient *derp.Client
 
-	req, err := http.NewRequest("GET", c.urlString(node), nil)
+	isXRay := wantsXRayUnderlay(node)
+
+	urlStr := c.urlString(node)
+	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -512,6 +532,10 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// https://github.com/tailscale/tailscale/issues/12724
 	}
 
+	if isXRay {
+		c.logf("derphttp: xray: sending HTTP upgrade request to %s", urlStr)
+	}
+
 	if !serverPub.IsZero() && serverProtoVersion != 0 {
 		// parseMetaCert found the server's public key (no TLS
 		// middlebox was in the way), so skip the HTTP upgrade
@@ -522,27 +546,51 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// that we don't want to deal with its HTTP response.
 		req.Header.Set(fastStartHeader, "1") // suppresses the server's HTTP response
 		if err := req.Write(brw); err != nil {
+			if isXRay {
+				c.logf("derphttp: xray: req.Write (fast-start) failed: %v", err)
+			}
 			return nil, 0, err
 		}
 		// No need to flush the HTTP request. the derp.Client's initial
 		// client auth frame will flush it.
 	} else {
 		if err := req.Write(brw); err != nil {
+			if isXRay {
+				c.logf("derphttp: xray: req.Write failed: %v", err)
+			}
 			return nil, 0, err
 		}
+		if isXRay {
+			c.logf("derphttp: xray: flushing HTTP request")
+		}
 		if err := brw.Flush(); err != nil {
+			if isXRay {
+				c.logf("derphttp: xray: brw.Flush failed: %v", err)
+			}
 			return nil, 0, err
 		}
 
+		if isXRay {
+			c.logf("derphttp: xray: reading HTTP response")
+		}
 		resp, err := http.ReadResponse(brw.Reader, req)
 		if err != nil {
+			if isXRay {
+				c.logf("derphttp: xray: http.ReadResponse failed: %v", err)
+			}
 			return nil, 0, err
+		}
+		if isXRay {
+			c.logf("derphttp: xray: HTTP response status=%d", resp.StatusCode)
 		}
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
 		}
+	}
+	if isXRay {
+		c.logf("derphttp: xray: starting DERP client handshake (recvServerKey + sendClientKey)")
 	}
 	derpClient, err = derp.NewClient(c.privateKey, httpConn, brw, c.logf,
 		derp.MeshKey(c.MeshKey),
@@ -551,7 +599,13 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		derp.IsProber(c.IsProber),
 	)
 	if err != nil {
+		if isXRay {
+			c.logf("derphttp: xray: derp.NewClient failed: %v", err)
+		}
 		return nil, 0, err
+	}
+	if isXRay {
+		c.logf("derphttp: xray: DERP client handshake complete")
 	}
 	if c.preferred {
 		if err := derpClient.NotePreferred(true); err != nil {
@@ -691,6 +745,47 @@ func (c *Client) DialRegionTLS(ctx context.Context, reg *tailcfg.DERPRegion) (tl
 	}
 }
 
+// __BEGIN_CYLONIX_ADD__
+// DialRegionConn returns a connection to a DERP node in the given region.
+// For nodes using an xray underlay, the returned connection is the raw xray
+// tunnel (already transport-secured) and noTLS is true, meaning the caller
+// should use plain HTTP. For regular nodes, noTLS is false and the returned
+// connection is a TLS-wrapped connection.
+func (c *Client) DialRegionConn(ctx context.Context, reg *tailcfg.DERPRegion) (conn net.Conn, node *tailcfg.DERPNode, noTLS bool, err error) {
+	tcpConn, node, err := c.dialRegion(ctx, reg)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	if wantsXRayUnderlay(node) {
+		// The xray tunnel provides its own transport security
+		// (REALITY+XHTTP), and the DERP behind it speaks plain HTTP.
+		return tcpConn, node, true, nil
+	}
+
+	done := make(chan bool) // unbuffered
+	defer close(done)
+
+	tlsConn := c.tlsClient(tcpConn, node)
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			tcpConn.Close()
+		}
+	}()
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, nil, false, err
+	}
+	select {
+	case done <- true:
+		return tlsConn, node, false, nil
+	case <-ctx.Done():
+		return nil, nil, false, ctx.Err()
+	}
+}
+// __END_CYLONIX_ADD__
+
 func (c *Client) dialContext(ctx context.Context, proto, addr string) (net.Conn, error) {
 	return netns.NewDialer(c.logf, c.netMon).DialContext(ctx, proto, addr)
 }
@@ -716,6 +811,12 @@ const dialNodeTimeout = 1500 * time.Millisecond
 // TODO(bradfitz): longer if no options remain perhaps? ...  Or longer
 // overall but have dialRegion start overlapping races?
 func (c *Client) dialNode(ctx context.Context, n *tailcfg.DERPNode) (net.Conn, error) {
+	// __BEGIN_CYLONIX_ADD__
+	if wantsXRayUnderlay(n) {
+		return c.dialNodeXRay(ctx, n)
+	}
+	// __END_CYLONIX_ADD__
+
 	// First see if we need to use an HTTP proxy.
 	proxyReq := &http.Request{
 		Method: "GET", // doesn't really matter
@@ -1095,6 +1196,8 @@ func (c *Client) Close() error {
 	if c.cancelCtx != nil {
 		c.cancelCtx() // not in lock, so it can cancel Connect, which holds mu
 	}
+
+	c.xrayInst.close() // close cached xray-core instance if any
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -13,6 +13,7 @@ import (
 
 	"tailscale.com/release/dist"
 	"tailscale.com/release/dist/cli"
+	cyqnap "tailscale.com/release/dist/cylonix-qnap"       // __CYLONIX_ADD__
 	cysynolo "tailscale.com/release/dist/cylonix-synology" // __CYLONIX_ADD__
 	"tailscale.com/release/dist/qnap"
 	"tailscale.com/release/dist/synology"
@@ -48,6 +49,7 @@ func getTargets() ([]dist.Target, error) {
 		return nil, errors.New("both --qnap-private-key-path and --qnap-certificate-path must be set")
 	}
 	ret = append(ret, qnap.Targets(qnapPrivateKeyPath, qnapCertificatePath)...)
+	ret = append(ret, cyqnap.Targets(qnapPrivateKeyPath, qnapCertificatePath)...) // __CYLONIX_ADD__
 	return ret, nil
 }
 

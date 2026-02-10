@@ -9,6 +9,7 @@ package web
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -21,6 +22,7 @@ import (
 // If the user is authenticated, but not authorized to use the client, an error is returned.
 func authorizeSynology(r *http.Request) (authorized bool, err error) {
 	if !hasSynoToken(r) {
+		log.Println("authorizeSynology: no SynoToken in request")
 		return false, nil
 	}
 

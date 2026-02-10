@@ -64,12 +64,29 @@ export function useAPI() {
   const toaster = useToaster()
   const { mutate } = useSWRConfig() // allows for global mutation
 
+  // __BEGIN_CYLONIX_MOD__
   const handlePostError = useCallback(
-    (toast?: string) => (err: Error) => {
+    (toast?: string) => (err: any) => {
+      // err may be a thrown Error whose message includes the server's
+      // response body (apiFetch sets that), or a network exception.
       console.error(err)
-      toast && toaster.show({ variant: "danger", message: toast })
+      const bodyMsg = err?.message ?? String(err)
+      const status = err?.status ? `(${err.status})` : ""
+      const message = toast
+        ? status
+          ? `${toast} ${status}: ${bodyMsg}`
+          : `${toast}: ${bodyMsg}`
+        : status
+        ? `${status} ${bodyMsg}`
+        : bodyMsg
+      // show a concise toast (truncate if excessively long)
+      // Due to synology responses the only useful part is probably just the
+      // status code.
+      const short = message.length > 100 ? message.slice(0, 100) + "…" : message
+      toaster.show({ variant: "danger", message: short, timeout: 10000 })
       throw err
     },
+    // __END_CYLONIX_MOD__
     [toaster]
   )
 
@@ -124,7 +141,7 @@ export function useAPI() {
             .then((d) => d.url && window.open(d.url, "_blank")) // "up" login step
             .then(() => incrementMetric("web_client_node_connect"))
             .then(() => mutate("/data"))
-            .catch(handlePostError("Failed to login"))
+            .catch(handlePostError("Failed to sign in"))
 
         /**
          * "logout" handles logging the node out of tailscale, effectively
@@ -135,7 +152,7 @@ export function useAPI() {
           // as tailscaled will be unreachable after the call completes.
           incrementMetric("web_client_node_disconnect")
           return apiFetch("/local/v0/logout", "POST").catch(
-            handlePostError("Failed to logout")
+            handlePostError("Failed to sign out")
           )
 
         /**
@@ -253,6 +270,38 @@ let csrfToken: string
 let synoToken: string | undefined // required for synology API requests
 let unraidCsrfToken: string | undefined // required for unraid POST requests (#8062)
 
+// __BEGIN_CYLONIX_ADD__
+const errorBodyTimeoutMs = 5000
+
+async function readErrorBody(r: Response, timeoutMs = errorBodyTimeoutMs) {
+  const textPromise = r.text()
+  if (!timeoutMs || timeoutMs <= 0) {
+    return textPromise
+  }
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const timeoutPromise = new Promise<string>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error("Timed out reading error response"))
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([textPromise, timeoutPromise])
+  } catch (err) {
+    try {
+      await r.body?.cancel()
+    } catch (cancelErr) {
+      console.warn("Failed to cancel error response body", cancelErr)
+    }
+    console.warn("Failed to read error response body", err)
+    return ""
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+    }
+  }
+}
+// __END_CYLONIX_ADD__
+
 /**
  * apiFetch wraps the standard JS fetch function with csrf header
  * management and param additions specific to the web client.
@@ -295,6 +344,7 @@ export function apiFetch<T>(
 
   return fetch(url, {
     method: method,
+    credentials: "same-origin",
     headers: {
       Accept: "application/json",
       "Content-Type": contentType,
@@ -305,14 +355,30 @@ export function apiFetch<T>(
     .then((r) => {
       updateCsrfToken(r)
       if (!r.ok) {
-        return r.text().then((err) => {
-          throw new Error(err)
+        // __BEGIN_CYLONIX_MOD__
+        console.error("API fetch error at endpoint:", endpoint, "method:", method)
+        return readErrorBody(r).then((text) => {
+          // Try to pull a useful message out of JSON error bodies.
+          let msg: string | undefined = text
+          try {
+            const j = JSON.parse(text)
+            if (j) msg = j.error ?? j.message ?? JSON.stringify(j)
+          } catch (e) {
+            // not JSON, keep text as-is
+          }
+          console.error("API error response:", r.status, text)
+          const e = new Error(msg || `HTTP ${r.status}`)
+          ;(e as any).status = r.status
+          ;(e as any).body = text
+          throw e
+          // __END_CYLONIX_MOD__
         })
       }
       return r
     })
     .then((r) => {
-      if (r.headers.get("Content-Type") === "application/json") {
+      const contentType = r.headers.get("Content-Type") ?? ""
+      if (contentType.includes("application/json")) {
         return r.json()
       }
     })
@@ -321,6 +387,72 @@ export function apiFetch<T>(
       return r
     })
 }
+
+// __BEGIN_CYLONIX_ADD__
+// apiFetchRaw performs an API request and returns the raw Response.
+// This is useful for endpoints that return non-JSON bodies (e.g. log downloads).
+export function apiFetchRaw(
+  endpoint: string,
+  method: "GET" | "POST" | "PATCH",
+  body?: any
+): Promise<Response> {
+  const urlParams = new URLSearchParams(window.location.search)
+  const nextParams = new URLSearchParams()
+  if (synoToken) {
+    nextParams.set("SynoToken", synoToken)
+  } else {
+    const token = urlParams.get("SynoToken")
+    if (token) {
+      nextParams.set("SynoToken", token)
+    }
+  }
+  const search = nextParams.toString()
+  const url = `api${endpoint}${search ? `?${search}` : ""}`
+
+  let contentType: string
+  if (unraidCsrfToken && method === "POST") {
+    const params = new URLSearchParams()
+    params.append("csrf_token", unraidCsrfToken)
+    if (body) {
+      params.append("ts_data", JSON.stringify(body))
+    }
+    body = params.toString()
+    contentType = "application/x-www-form-urlencoded;charset=UTF-8"
+  } else {
+    body = body ? JSON.stringify(body) : undefined
+    contentType = "application/json"
+  }
+
+  return fetch(url, {
+    method,
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": contentType,
+      "X-CSRF-Token": csrfToken,
+    },
+    body,
+  }).then((r) => {
+    updateCsrfToken(r)
+    if (!r.ok) {
+      return readErrorBody(r).then((text) => {
+        let msg: string | undefined = text
+        try {
+          const j = JSON.parse(text)
+          if (j) msg = j.error ?? j.message ?? JSON.stringify(j)
+        } catch (e) {
+          // not JSON, keep text as-is
+        }
+        const e = new Error(msg || `HTTP ${r.status}`)
+        ;(e as any).status = r.status
+        ;(e as any).body = text
+        throw e
+      })
+    }
+    return r
+  })
+}
+// __END_CYLONIX_ADD__
 
 function updateCsrfToken(r: Response) {
   const tok = r.headers.get("X-CSRF-Token")

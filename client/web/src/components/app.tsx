@@ -23,7 +23,7 @@ export default function App() {
   const { data: auth, loading: loadingAuth, newSession } = useAuth()
 
   return (
-    <main className="min-w-sm max-w-lg mx-auto py-4 sm:py-14 px-5">
+    <main className="min-w-sm max-w-3xl mx-auto py-4 sm:py-14 px-5">
       {loadingAuth || !auth ? (
         <LoadingView />
       ) : (

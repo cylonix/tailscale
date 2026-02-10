@@ -22,6 +22,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"tailscale.com/client/web"
 	"tailscale.com/ipn"
+	"tailscale.com/types/logger"
 )
 
 var webCmd = &ffcli.Command{
@@ -114,6 +115,12 @@ func runWeb(ctx context.Context, args []string) error {
 	if webArgs.readonly {
 		opts.Mode = web.ReadOnlyServerMode
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	log.SetOutput(os.Stderr)
+	opts.Logf = logger.WithPrefix(log.Printf, "web:")
+	// __END_CYLONIX_ADD__
+
 	webServer, err := web.NewServer(opts)
 	if err != nil {
 		log.Printf("tailscale.web: %v", err)

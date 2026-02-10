@@ -33,6 +33,7 @@ var netcheckCmd = &ffcli.Command{
 	Exec:       runNetcheck,
 	FlagSet: (func() *flag.FlagSet {
 		fs := newFlagSet("netcheck")
+		fs.BoolVar(&netcheckArgs.full, "full", false, "execute full report") // __CYLONIX_ADD__
 		fs.StringVar(&netcheckArgs.format, "format", "", `output format; empty (for human-readable), "json" or "json-line"`)
 		fs.DurationVar(&netcheckArgs.every, "every", 0, "if non-zero, do an incremental report with the given frequency")
 		fs.BoolVar(&netcheckArgs.verbose, "verbose", false, "verbose logs")
@@ -44,6 +45,7 @@ var netcheckArgs struct {
 	format  string
 	every   time.Duration
 	verbose bool
+	full    bool
 }
 
 func runNetcheck(ctx context.Context, args []string) error {
@@ -96,6 +98,14 @@ func runNetcheck(ctx context.Context, args []string) error {
 	}
 	for {
 		t0 := time.Now()
+
+		// __BEGIN_CYLONIX_ADD__
+		if netcheckArgs.full {
+			c.Logf("netcheck: Running full report...")
+			c.MakeNextReportFull()
+		}
+		// __END_CYLONIX_ADD__
+
 		report, err := c.GetReport(ctx, dm, nil)
 		d := time.Since(t0)
 		if netcheckArgs.verbose {

@@ -462,6 +462,7 @@ func (src *DERPNode) Clone() *DERPNode {
 	}
 	dst := new(DERPNode)
 	*dst = *src
+	dst.XRay = src.XRay.Clone()
 	return dst
 }
 
@@ -479,6 +480,7 @@ var _DERPNodeCloneNeedsRegeneration = DERPNode(struct {
 	InsecureForTests bool
 	STUNTestIP       string
 	CanPort80        bool
+	XRay             *DERPXRay
 }{})
 
 // Clone makes a deep copy of SSHRule.

@@ -35,6 +35,10 @@ start_daemon() {
     # We pipe cylonixd's output to sed, so "$!" retrieves the PID of sed not cylonixd.
     # Use jobs -p to retrieve the PID of the most recent process group leader.
     jobs -p >"${PID_FILE}"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >>${LOG_FILE}
+    echo "DSM version ${SYNOPKG_DSM_VERSION_MAJOR}" >>${LOG_FILE}
+    echo "/dev/net/tun exists: $( [ -e /dev/net/tun ] && echo yes || echo no )" >>${LOG_FILE}
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >>${LOG_FILE}
 }
 
 stop_daemon() {

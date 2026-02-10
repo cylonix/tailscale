@@ -250,17 +250,11 @@
      inkscape:groupmode="layer"
      id="layer1"
      transform="translate(0,-26.06665)">
-    <text
-       xml:space="preserve"
-       style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:247.83827209px;line-height:1.25;font-family:'URW Gothic';-inkscape-font-specification:'URW Gothic, Semi-Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-feature-settings:normal;text-align:start;letter-spacing:0px;word-spacing:0px;writing-mode:lr-tb;text-anchor:start;fill:#0066ff;fill-opacity:1;stroke:none;stroke-width:6.19594955;filter:url(#filter4023)"
-       x="34.43536"
-       y="256.93658"
-       id="text3986"
-       transform="scale(1.0236919,0.97685641)"><tspan
-         sodipodi:role="line"
-         id="tspan3984"
-         x="34.43536"
-         y="256.93658"
-         style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:247.83827209px;font-family:'URW Gothic';-inkscape-font-specification:'URW Gothic, Semi-Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-feature-settings:normal;text-align:start;writing-mode:lr-tb;text-anchor:start;stroke-width:6.19594955;fill:#0066ff;">C</tspan></text>
+    <path
+       id="cylonix-c"
+       d="m 182.89048,205.8819 c -15.11813,15.61381 -27.75788,21.56193 -45.3544,21.56193 -33.95384,0 -61.46389,-28.25356 -61.46389,-62.45524 0,-14.8703 5.70028,-30.73195 15.118134,-41.63683 11.152726,-13.13543 27.014376,-20.0749 45.602246,-20.0749 21.31409,0 35.68871,6.93947 48.08062,23.04896 h 37.91926 c -7.18731,-15.86165 -13.63111,-24.53599 -26.02302,-34.697363 -16.853,-13.631105 -38.41493,-21.066253 -60.72038,-21.066253 -51.798197,0 -94.178542,42.380346 -94.178542,94.178546 0,53.03739 42.876021,95.41773 96.409092,95.41773 37.67141,0 70.13823,-20.81841 84.51285,-54.27658 z"
+       fill="#0066ff"
+       stroke="none"
+       filter="url(#filter4023)" />
   </g>
 </svg>

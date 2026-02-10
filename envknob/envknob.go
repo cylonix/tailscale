@@ -90,7 +90,6 @@ func LogCurrent(logf logf) {
 // Register functions. All Setenv calls are meant to happen early in main before
 // any goroutines are started.
 func Setenv(envVar, val string) {
-	log.Printf("envknob: set %s=%q", envVar, val)
 	mu.Lock()
 	defer mu.Unlock()
 	os.Setenv(envVar, val)
@@ -240,7 +239,6 @@ func setBoolLocked(p *bool, envVar, val string) {
 	if err != nil {
 		log.Fatalf("invalid boolean environment variable %s value %q", envVar, val)
 	}
-	log.Printf("envknob: set %s=%v", envVar, *p)
 }
 
 // +checklocks:mu

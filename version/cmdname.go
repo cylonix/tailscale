@@ -54,6 +54,13 @@ func cmdName(exe string) string {
 	if ret == "" {
 		return fallbackName
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	// Special case: if the fallback name is "cylonixd", always return that.
+	if fallbackName == "cylonixd" {
+		return "cylonixd"
+	}
+	// __END_CYLONIX_ADD__
 	return ret
 }
 

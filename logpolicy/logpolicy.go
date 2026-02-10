@@ -65,6 +65,11 @@ var getLogTargetOnce struct {
 func getLogTarget() string {
 	getLogTargetOnce.Do(func() {
 		envTarget, _ := os.LookupEnv("TS_LOG_TARGET")
+		// __BEGIN_CYLONIX_ADD__
+		if envTarget == "" {
+			envTarget = "https://log.cylonix.io/log"
+		}
+		// __END_CYLONIX_ADD__
 		getLogTargetOnce.v, _ = syspolicy.GetString(syspolicy.LogTarget, envTarget)
 	})
 
@@ -706,7 +711,7 @@ func attachFilchBuffer(conf *logtail.Config, dir, cmdName string, logf logger.Lo
 	// NAS disks cannot hibernate if we're writing logs to them all the time.
 	// https://github.com/tailscale/tailscale/issues/3551
 	if runtime.GOOS == "linux" && (distro.Get() == distro.Synology || distro.Get() == distro.QNAP) {
-		tmpfsLogs := "/tmp/tailscale-logs"
+		tmpfsLogs := "/tmp/cylonix-logs" // __CYLONIX_MOD__
 		if err := os.MkdirAll(tmpfsLogs, 0755); err == nil {
 			filchPrefix = filepath.Join(tmpfsLogs, cmdName)
 			filchOptions.MaxFileSize = 1 << 20
@@ -726,6 +731,7 @@ func attachFilchBuffer(conf *logtail.Config, dir, cmdName string, logf logger.Lo
 	if filchErr != nil {
 		logf("filch failed: %v", filchErr)
 	}
+	logf("log filch buffer: %q", filchPrefix)
 }
 
 // dialLog is used by NewLogtailTransport to log the happy path of its

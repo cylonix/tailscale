@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"cmp"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -250,6 +249,13 @@ type Client struct {
 	lastFull time.Time             // time of last full (non-incremental) report
 	curState *reportState          // non-nil if we're in a call to GetReport
 	resolver *dnscache.Resolver    // only set if UseDNSCache is true
+
+	// __BEGIN_CYLONIX_ADD__
+	// xrayProbeMu guards xrayProbeClient. It is separate from mu to avoid
+	// holding the main lock during slow xray dial operations.
+	xrayProbeMu     sync.Mutex
+	xrayProbeClient *derphttp.Client // cached derphttp client for xray HTTPS probes
+	// __END_CYLONIX_ADD__
 }
 
 func (c *Client) enoughRegions() int {
@@ -285,6 +291,31 @@ func (c *Client) vlogf(format string, a ...any) {
 		c.logf(format, a...)
 	}
 }
+
+// __BEGIN_CYLONIX_ADD__
+// getXRayProbeClient returns a cached derphttp.Client for xray HTTPS probes.
+// The client (and its underlying xray-core instance) is kept alive across
+// probe cycles so that the XHTTP connection pool is reused, avoiding the
+// full REALITY+TLS handshake on every netcheck cycle.
+func (c *Client) getXRayProbeClient() *derphttp.Client {
+	c.xrayProbeMu.Lock()
+	defer c.xrayProbeMu.Unlock()
+	if c.xrayProbeClient == nil {
+		c.xrayProbeClient = derphttp.NewNetcheckClient(c.logf, c.NetMon)
+	}
+	return c.xrayProbeClient
+}
+
+// closeXRayProbeClient closes the cached xray probe client, if any.
+func (c *Client) closeXRayProbeClient() {
+	c.xrayProbeMu.Lock()
+	defer c.xrayProbeMu.Unlock()
+	if c.xrayProbeClient != nil {
+		c.xrayProbeClient.Close()
+		c.xrayProbeClient = nil
+	}
+}
+// __END_CYLONIX_ADD__
 
 // MakeNextReportFull forces the next GetReport call to be a full
 // (non-incremental) probe of all DERP regions.
@@ -988,6 +1019,19 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 			}
 		}
 		if len(need) > 0 {
+			// __BEGIN_CYLONIX_ADD__
+			// Log which regions need HTTPS probing and current ctx deadline.
+			needIDs := make([]int, 0, len(need))
+			for _, r := range need {
+				needIDs = append(needIDs, r.RegionID)
+			}
+			remaining := "none"
+			if dl, ok := ctx.Deadline(); ok {
+				remaining = time.Until(dl).Round(time.Millisecond).String()
+			}
+			c.logf("netcheck: UDP blocked, HTTPS probing %d regions %v (ctx remaining=%s)", len(need), needIDs, remaining)
+			// __END_CYLONIX_ADD__
+
 			if opts == nil || !opts.OnlyTCP443 {
 				// Kick off ICMP in parallel to HTTPS checks; we don't
 				// reuse the same WaitGroup for those probes because we
@@ -1033,7 +1077,77 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 			}(reg)
 		}
 		wg.Wait()
+
+		// __BEGIN_CYLONIX_ADD__
+		// Log final RegionLatency after all HTTPS/ICMP probes complete.
+		rs.mu.Lock()
+		latencies := make(map[int]time.Duration, len(rs.report.RegionLatency))
+		for k, v := range rs.report.RegionLatency {
+			latencies[k] = v
+		}
+		rs.mu.Unlock()
+		c.logf("netcheck: after HTTPS/ICMP probes, RegionLatency=%v", latencies)
+		// __END_CYLONIX_ADD__
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	// Even when STUN succeeded for some regions, xray-underlay regions may
+	// have no STUN node reachable (STUN is bypassed by the xray tunnel).
+	// Probe those regions via HTTPS so they always get a latency measurement.
+	if ctx.Err() == nil {
+		var xrayNeed []*tailcfg.DERPRegion
+		for rid, reg := range dm.Regions {
+			if !rs.haveRegionLatency(rid) && regionHasXRayNode(reg) {
+				xrayNeed = append(xrayNeed, reg)
+			}
+		}
+		if len(xrayNeed) > 0 {
+			needIDs := make([]int, 0, len(xrayNeed))
+			for _, r := range xrayNeed {
+				needIDs = append(needIDs, r.RegionID)
+			}
+			remaining := "none"
+			if dl, ok := ctx.Deadline(); ok {
+				remaining = time.Until(dl).Round(time.Millisecond).String()
+			}
+			c.logf("netcheck: xray regions still need probing: %v (ctx remaining=%s)", needIDs, remaining)
+
+			var xwg sync.WaitGroup
+			xwg.Add(len(xrayNeed))
+			for _, reg := range xrayNeed {
+				go func(reg *tailcfg.DERPRegion) {
+					defer xwg.Done()
+					if d, ip, err := c.measureHTTPSLatency(ctx, reg); err != nil {
+						c.logf("[v1] netcheck: measuring xray HTTPS latency of %v (%d): %v", reg.RegionCode, reg.RegionID, err)
+					} else {
+						rs.mu.Lock()
+						if l, ok := rs.report.RegionLatency[reg.RegionID]; !ok {
+							mak.Set(&rs.report.RegionLatency, reg.RegionID, d)
+						} else if l >= d {
+							rs.report.RegionLatency[reg.RegionID] = d
+						}
+						if ip.Is4() {
+							rs.report.IPv4 = true
+						}
+						if ip.Is6() {
+							rs.report.IPv6 = true
+						}
+						rs.mu.Unlock()
+					}
+				}(reg)
+			}
+			xwg.Wait()
+
+			rs.mu.Lock()
+			latencies := make(map[int]time.Duration, len(rs.report.RegionLatency))
+			for k, v := range rs.report.RegionLatency {
+				latencies[k] = v
+			}
+			rs.mu.Unlock()
+			c.logf("netcheck: after xray HTTPS probes, RegionLatency=%v", latencies)
+		}
+	}
+	// __END_CYLONIX_ADD__
 
 	// Wait for captive portal check before finishing the report.
 	<-captivePortalDone
@@ -1111,64 +1225,165 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
 
 // measureHTTPSLatency measures HTTP request latency to the DERP region, but
 // only returns success if an HTTPS request to the region succeeds.
+// For nodes using an xray underlay, the tunnel already provides transport
+// security, so the latency check uses plain HTTP through the tunnel.
 func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegion) (time.Duration, netip.Addr, error) {
 	metricHTTPSend.Add(1)
+
+	// __BEGIN_CYLONIX_ADD__
+	// Check whether this region uses an xray underlay (first non-STUN node).
+	isXRay := false
+	for _, n := range reg.Nodes {
+		if !n.STUNOnly && derphttp.WantsXRayUnderlay(n) {
+			isXRay = true
+			break
+		}
+	}
+
+	if isXRay {
+		remaining := "none"
+		if dl, ok := ctx.Deadline(); ok {
+			remaining = time.Until(dl).Round(time.Millisecond).String()
+		}
+		c.logf("netcheck: xray: measureHTTPSLatency START region %d, parent ctx remaining=%s", reg.RegionID, remaining)
+	}
+	// __END_CYLONIX_ADD__
+
 	ctx, cancel := context.WithTimeout(ctx, httpsProbeTimeout)
 	defer cancel()
 
 	var ip netip.Addr
 
-	dc := derphttp.NewNetcheckClient(c.logf, c.NetMon)
-	defer dc.Close()
+	// __BEGIN_CYLONIX_MOD__
+	// For xray regions, reuse a cached derphttp.Client so that the
+	// underlying xray-core Instance (and its XHTTP connection pool) stays
+	// warm across probe cycles.  This avoids a full TLS+REALITY+XHTTP
+	// handshake on every measurement and produces much more consistent
+	// latency numbers.
+	var dc *derphttp.Client
+	if isXRay {
+		dc = c.getXRayProbeClient()
+		// Do NOT defer dc.Close() — we keep it alive across probes.
+	} else {
+		dc = derphttp.NewNetcheckClient(c.logf, c.NetMon)
+		defer dc.Close()
+	}
 
-	// DialRegionTLS may dial multiple times if a node is not available, as such
-	// it does not have stable timing to measure.
-	tlsConn, tcpConn, node, err := dc.DialRegionTLS(ctx, reg)
+	// DialRegionConn may dial multiple times if a node is not available, as
+	// such it does not have stable timing to measure.
+	t0 := c.timeNow()
+	conn, node, noTLS, err := dc.DialRegionConn(ctx, reg)
 	if err != nil {
+		if isXRay {
+			c.logf("netcheck: measureHTTPSLatency region %d: xray DialRegionConn failed after %v: %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond), err)
+		}
 		return 0, ip, err
 	}
-	defer tcpConn.Close()
+	defer conn.Close()
+	if noTLS {
+		c.logf("netcheck: measureHTTPSLatency region %d: xray DialRegionConn took %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond))
+	}
 
-	if ta, ok := tlsConn.RemoteAddr().(*net.TCPAddr); ok {
+	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
 		ip, _ = netip.AddrFromSlice(ta.IP)
 		ip = ip.Unmap()
 	}
-	if ip == (netip.Addr{}) {
-		return 0, ip, fmt.Errorf("no unexpected RemoteAddr %#v", tlsConn.RemoteAddr())
-	}
-
-	connc := make(chan *tls.Conn, 1)
-	connc <- tlsConn
-
-	// make an HTTP request to measure, as this enables us to account for MITM
-	// overhead in e.g. corp environments that have HTTP MITM in front of DERP.
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return nil, errors.New("unexpected DialContext dial")
-		},
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			select {
-			case nc := <-connc:
-				return nc, nil
-			default:
-				return nil, errors.New("only one conn expected")
+	if ip == (netip.Addr{}) && noTLS {
+		// For xray underlay connections, RemoteAddr may not be a real
+		// TCP address. Resolve the node's IP from the DERP map instead.
+		if node.IPv4 != "" {
+			ip, _ = netip.ParseAddr(node.IPv4)
+		}
+		if ip == (netip.Addr{}) {
+			// Fall back to DNS.
+			addrs, dnsErr := net.DefaultResolver.LookupIPAddr(ctx, node.HostName)
+			if dnsErr == nil {
+				for _, a := range addrs {
+					if na, ok := netip.AddrFromSlice(a.IP); ok {
+						ip = na.Unmap()
+						break
+					}
+				}
 			}
-		},
+		}
 	}
+	if ip == (netip.Addr{}) {
+		if isXRay {
+			c.logf("netcheck: xray: region %d: IP resolution failed, RemoteAddr=%v, node.IPv4=%q, node.HostName=%q", reg.RegionID, conn.RemoteAddr(), node.IPv4, node.HostName)
+		}
+		return 0, ip, fmt.Errorf("no unexpected RemoteAddr %#v", conn.RemoteAddr())
+	}
+	if isXRay {
+		c.logf("netcheck: xray: region %d: resolved ip=%v", reg.RegionID, ip)
+	}
+
+	var tr *http.Transport
+	var scheme string
+
+	if noTLS {
+		// xray underlay: the tunnel already provides transport security.
+		// Use plain HTTP through the tunnel.
+		scheme = "http"
+		connc := make(chan net.Conn, 1)
+		connc <- conn
+		tr = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				select {
+				case nc := <-connc:
+					return nc, nil
+				default:
+					return nil, errors.New("only one conn expected")
+				}
+			},
+		}
+	} else {
+		// Standard TLS path.
+		scheme = "https"
+		connc := make(chan net.Conn, 1)
+		connc <- conn
+		tr = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return nil, errors.New("unexpected DialContext dial")
+			},
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				select {
+				case nc := <-connc:
+					return nc, nil
+				default:
+					return nil, errors.New("only one conn expected")
+				}
+			},
+		}
+	}
+	// __END_CYLONIX_MOD__
+
 	hc := &http.Client{Transport: tr}
 
 	// This is the request that will be measured, the request and response
 	// should be small enough to fit into a single packet each way unless the
 	// connection has already become unstable.
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+"/derp/latency-check", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", scheme+"://"+node.HostName+"/derp/latency-check", nil)
 	if err != nil {
 		return 0, ip, err
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	if isXRay {
+		remaining := "none"
+		if dl, ok := ctx.Deadline(); ok {
+			remaining = time.Until(dl).Round(time.Millisecond).String()
+		}
+		c.logf("netcheck: xray: region %d: sending HTTP GET %s://%s/derp/latency-check (ctx remaining=%s)", reg.RegionID, scheme, node.HostName, remaining)
+	}
+	// __END_CYLONIX_ADD__
 
 	startTime := c.timeNow()
 	resp, err := hc.Do(req)
 	reqDur := c.timeNow().Sub(startTime)
 	if err != nil {
+		if noTLS {
+			c.logf("netcheck: measureHTTPSLatency region %d: xray HTTP request failed after %v: %v", reg.RegionID, reqDur.Round(time.Millisecond), err)
+		}
 		return 0, ip, err
 	}
 	defer resp.Body.Close()
@@ -1177,12 +1392,19 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	// an access denied by a MITM proxy (or at the very least a signal not to
 	// trust this latency check).
 	if resp.StatusCode > 299 {
+		if noTLS {
+			c.logf("netcheck: measureHTTPSLatency region %d: xray HTTP bad status: %d (%s)", reg.RegionID, resp.StatusCode, resp.Status)
+		}
 		return 0, ip, fmt.Errorf("unexpected status code: %d (%s)", resp.StatusCode, resp.Status)
 	}
 
 	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
 	if err != nil {
 		return 0, ip, err
+	}
+
+	if noTLS {
+		c.logf("netcheck: measureHTTPSLatency region %d: xray latency probe succeeded: %v", reg.RegionID, reqDur.Round(time.Millisecond))
 	}
 
 	// return the connection duration, not the request duration, as this is the
@@ -1419,6 +1641,8 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(rs *reportState, r *Report,
 		}
 	}
 
+	c.logf("netcheck: setPreferredDERP: prevDERP=%d, curReport.RegionLatency=%v, bestRecent=%v, picked=%d (bestAny=%v, oldRegionCurLatency=%v)",
+		prevDERP, r.RegionLatency, bestRecent, r.PreferredDERP, bestAny, oldRegionCurLatency)
 	// If we're changing our preferred DERP, we want to add some stickiness
 	// to the current DERP region. We avoid changing if the old region is
 	// still accessible and one of the conditions below is true.
@@ -1674,6 +1898,19 @@ func regionHasDERPNode(r *tailcfg.DERPRegion) bool {
 	}
 	return false
 }
+
+// __BEGIN_CYLONIX_ADD__
+// regionHasXRayNode reports whether a region contains a non-STUN-only node
+// that uses an xray underlay tunnel.
+func regionHasXRayNode(r *tailcfg.DERPRegion) bool {
+	for _, n := range r.Nodes {
+		if !n.STUNOnly && derphttp.WantsXRayUnderlay(n) {
+			return true
+		}
+	}
+	return false
+}
+// __END_CYLONIX_ADD__
 
 func maxDurationValue(m map[int]time.Duration) (max time.Duration) {
 	for _, v := range m {
