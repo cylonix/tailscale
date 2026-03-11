@@ -491,7 +491,7 @@ func (m *l2RelayManager) startIPv4MulticastCapture(ctx context.Context, proto l2
 	}
 	started := false
 	for i := range ifaces {
-		m.logf("checking interface for multicast capture: " + ifaces[i].Name)
+		m.logf("checking interface for multicast capture: %v", ifaces[i].Name)
 		ifi := ifaces[i]
 		if ifi.Flags&net.FlagUp == 0 {
 			continue

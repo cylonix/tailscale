@@ -41,7 +41,7 @@ func isLikelyLANTarget(ip netip.Addr) bool {
 func proxyTCP(m *l2RelayManager, from tailcfg.NodeView, target string, fromAddr, selfAddr netip.Addr, w http.ResponseWriter) error {
 	logf := m.logf
 	if target == "" {
-		m.limitedLogf("l2relay: proxy deny missing-target from=%d", from.Name())
+		m.limitedLogf("l2relay: proxy deny missing-target from=%v", from.Name())
 		return errors.New("missing proxy target")
 	}
 	logf("l2relay: proxy request from=%d target=%q", from.Name(), target)
@@ -72,7 +72,7 @@ func proxyTCP(m *l2RelayManager, from tailcfg.NodeView, target string, fromAddr,
 	}
 
 	if m.l2DiscoveryAllowed(fromAddr, selfAddr, "ipp-proxy", true) {
-		m.limitedLogf("l2relay: proxy deny policy from=%d src=%q self_dst=%q", from.Name(), fromAddr, selfAddr)
+		m.limitedLogf("l2relay: proxy deny policy from=%v src=%q self_dst=%q", from.Name(), fromAddr, selfAddr)
 		return errors.New("policy denied")
 	}
 
