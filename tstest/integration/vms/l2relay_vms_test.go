@@ -55,7 +55,7 @@ func TestVML2DiscoveryRulesConnectivity(t *testing.T) {
 	vm.waitStartup(t)
 	guestLoginURL := guestReachableHostURL(h.loginServerURL) // __CYLONIX_ADD__
 
-	ipm := h.waitForIPMap(t, vm, distro)
+	ipm := h.waitForIPMap(t, vm)
 	_, cli := h.setupSSHShell(t, distro, ipm)
 	timeout := 30 * time.Second
 	runTestCommands(t, timeout, cli, []expect.Batcher{
@@ -134,9 +134,9 @@ func TestVML2RelayUDPInterceptE2E(t *testing.T) {
 	vm2.waitStartup(t)
 
 	guestLoginURL := guestReachableHostURL(h.loginServerURL)
-	ipm1 := h.waitForIPMap(t, vm1, distro)
+	ipm1 := h.waitForIPMap(t, vm1)
 	_, cli1 := h.setupSSHShell(t, distro, ipm1)
-	ipm2 := h.waitForIPMap(t, vm2, distro)
+	ipm2 := h.waitForIPMap(t, vm2)
 	_, cli2 := h.setupSSHShell(t, distro, ipm2)
 
 	startVMWithTailscale(t, cli1, guestLoginURL)
@@ -191,9 +191,9 @@ func TestVML2RelayNASShareE2E(t *testing.T) {
 
 	guestLoginURL := guestReachableHostURL(h.loginServerURL)
 
-	ipm2 := h.waitForIPMap(t, vm2, distro)
+	ipm2 := h.waitForIPMap(t, vm2)
 	_, cli2 := h.setupSSHShell(t, distro, ipm2)
-	ipm3 := h.waitForIPMap(t, vm3, distro)
+	ipm3 := h.waitForIPMap(t, vm3)
 	_, cli3 := h.setupSSHShell(t, distro, ipm3)
 
 	startVMWithTailscale(t, cli2, guestLoginURL)
@@ -208,8 +208,14 @@ func TestVML2RelayNASShareE2E(t *testing.T) {
 		"mkdir -p /srv/l2relay-share",
 		"printf '%s\\n' 'hello-from-vm2' > /srv/l2relay-share/hello.txt",
 		"nohup python3 -m http.server 18080 --bind 0.0.0.0 --directory /srv/l2relay-share >/tmp/l2relay-share-http.log 2>&1 &",
-		"sleep 1",
-		"ss -lnt | grep -q ':18080'",
+		"for i in $(seq 1 20); do",
+		"  if ss -lnt | grep -q ':18080'; then",
+		"    exit 0",
+		"  fi",
+		"  sleep 1",
+		"done",
+		"cat /tmp/l2relay-share-http.log >&2 || true",
+		"exit 1",
 	}, "\n")
 	mustRunGuestCommand(t, cli2, "bash -lc "+shellQuote(prepareNasCmd))
 

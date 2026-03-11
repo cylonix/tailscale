@@ -82,6 +82,20 @@ func run(t *testing.T, dir, prog string, args ...string) {
 	}
 }
 
+func isoImageTool(t *testing.T) string {
+	t.Helper()
+
+	for _, prog := range []string{"genisoimage", "mkisofs"} {
+		if _, err := exec.LookPath(prog); err == nil {
+			return prog
+		}
+	}
+
+	t.Logf("hint: nix-shell -p go -p qemu -p cdrkit --run 'go test --v --timeout=60m --run-vm-tests'")
+	t.Fatal(`missing dependency: neither "genisoimage" nor "mkisofs" was found in $PATH`)
+	return ""
+}
+
 // mkLayeredQcow makes a layered qcow image that allows us to keep the upstream
 // VM images pristine and only do our changes on an overlay.
 func mkLayeredQcow(t *testing.T, tdir string, d Distro, qcowBase string) {
@@ -102,7 +116,7 @@ var (
 
 // mkSeed makes the cloud-init seed ISO that is used to configure a VM with
 // tailscale.
-func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
+func mkSeed(t *testing.T, d Distro, hostname, sshKey, hostURL, tdir string, port int) {
 	t.Helper()
 
 	dir := filepath.Join(tdir, d.Name, "seed")
@@ -120,7 +134,7 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 			Hostname string
 		}{
 			ID:       "31337",
-			Hostname: d.Name,
+			Hostname: hostname,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -149,7 +163,7 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 		}{
 			SSHKey:     strings.TrimSpace(sshKey),
 			HostURL:    hostURL,
-			Hostname:   d.Name,
+			Hostname:   hostname,
 			Port:       port,
 			InstallPre: d.InstallPre(),
 			Password:   securePassword,
@@ -171,7 +185,11 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 		filepath.Join(dir, "user-data"),
 	}
 
-	run(t, tdir, "genisoimage", args...)
+	if hackOpenSUSE151UserData(t, d, dir) {
+		args = append(args, filepath.Join(dir, "openstack"))
+	}
+
+	run(t, tdir, isoImageTool(t), args...)
 }
 
 // ipMapping maps a hostname, SSH port and SSH IP together
@@ -233,10 +251,7 @@ func setupTests(t *testing.T) {
 	}
 	// __END_CYLONIX_MOD__
 
-	if _, err := exec.LookPath("genisoimage"); err != nil {
-		t.Logf("hint: nix-shell -p go -p qemu -p cdrkit --run 'go test --v --timeout=60m --run-vm-tests'")
-		t.Fatalf("missing dependency: %v", err)
-	}
+	isoImageTool(t)
 }
 
 var ramsem struct {
@@ -262,10 +277,10 @@ func testOneDistribution(t *testing.T, n int, distro Distro) {
 	vm := h.mkVM(t, n, distro, h.pubKey, h.loginServerURL, dir)
 	vm.waitStartup(t)
 
-	h.testDistro(t, distro, h.waitForIPMap(t, vm, distro))
+	h.testDistro(t, distro, h.waitForIPMap(t, vm))
 }
 
-func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance, distro Distro) ipMapping {
+func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance) ipMapping {
 	t.Helper()
 	var ipm ipMapping
 
@@ -275,7 +290,7 @@ func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance, distro Distro) ipMa
 		var ok bool
 
 		h.ipMu.Lock()
-		ipm, ok = h.ipMap[distro.Name]
+		ipm, ok = h.ipMap[vm.name]
 		h.ipMu.Unlock()
 
 		if ok {

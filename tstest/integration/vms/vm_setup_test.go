@@ -36,6 +36,7 @@ import (
 
 type vmInstance struct {
 	d       Distro
+	name    string
 	cmd     *exec.Cmd
 	done    chan struct{}
 	doneErr error // not written until done is closed
@@ -192,6 +193,7 @@ func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir stri
 	d, guestArch := distroForHost(d)
 	qemuBinary := qemuBinaryForArch(guestArch)
 	// __END_CYLONIX_ADD__
+	hostname := fmt.Sprintf("%s-%d", d.Name, n)
 
 	cdir, err := os.UserCacheDir()
 	if err != nil {
@@ -213,7 +215,7 @@ func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir stri
 	}
 
 	mkLayeredQcow(t, tdir, d, qcowPath)
-	mkSeed(t, d, sshKey, guestReachableHostURL(hostURL), tdir, port) // __CYLONIX_MOD__
+	mkSeed(t, d, hostname, sshKey, guestReachableHostURL(hostURL), tdir, port) // __CYLONIX_MOD__
 
 	driveArg := fmt.Sprintf("file=%s,if=virtio", filepath.Join(tdir, d.Name+".qcow2"))
 
@@ -276,6 +278,7 @@ func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir stri
 	vm := &vmInstance{
 		cmd:  cmd,
 		d:    d,
+		name: hostname,
 		done: make(chan struct{}),
 	}
 

@@ -51,7 +51,7 @@ func TestMITMProxy(t *testing.T) {
 	vm := h.mkVM(t, 2, distro, h.pubKey, h.loginServerURL, t.TempDir())
 	vm.waitStartup(t)
 
-	ipm := h.waitForIPMap(t, vm, distro)
+	ipm := h.waitForIPMap(t, vm)
 	_, cli := h.setupSSHShell(t, distro, ipm)
 
 	sftpCli, err := sftp.NewClient(cli)
