@@ -1208,7 +1208,6 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 
 // __BEGIN_CYLONIX_ADD__
 func (f *forwarder) ResetDNSClientCache() {
-	f.logf("Resetting DNS-over-HTTPS client cache")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for k, c := range f.dohClient {

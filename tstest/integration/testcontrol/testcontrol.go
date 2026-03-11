@@ -59,8 +59,11 @@ type Server struct {
 	RequireMachineAuth bool
 	Verbose            bool
 	DNSConfig          *tailcfg.DNSConfig // nil means no DNS config
-	MagicDNSDomain     string
-	C2NResponses       syncs.Map[string, func(*http.Response)] // token => onResponse func
+	// CYLONIX_ADD: L2DiscoveryRules are included in map responses to drive
+	// the cylonix discovery relay (mDNS / WSD) policy on connected clients.
+	L2DiscoveryRules []tailcfg.L2DiscoveryRule
+	MagicDNSDomain   string
+	C2NResponses     syncs.Map[string, func(*http.Response)] // token => onResponse func
 
 	// PeerRelayGrants, if true, inserts relay capabilities into the wildcard
 	// grants rules.
@@ -566,6 +569,15 @@ func (s *Server) AddDNSRecords(records ...tailcfg.DNSRecord) {
 	}
 	s.DNSConfig.ExtraRecords = append(s.DNSConfig.ExtraRecords, records...)
 	s.updateLocked("AddDNSRecords", s.nodeIDsLocked(0))
+}
+
+// CYLONIX_ADD: SetL2DiscoveryRules updates the L2 discovery rules returned in
+// map responses.
+func (s *Server) SetL2DiscoveryRules(rules []tailcfg.L2DiscoveryRule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.L2DiscoveryRules = slices.Clone(rules)
+	s.updateLocked("SetL2DiscoveryRules", s.nodeIDsLocked(0))
 }
 
 // nodeIDsLocked returns the node IDs of all nodes in the server, except
@@ -1325,6 +1337,7 @@ func (s *Server) MapResponse(req *tailcfg.MapRequest) (res *tailcfg.MapResponse,
 		DNSConfig:       dns,
 		ControlTime:     &t,
 	}
+	res.L2DiscoveryRules = slices.Clone(s.L2DiscoveryRules) // __CYLONIX_ADD__
 
 	s.mu.Lock()
 	nodeMasqs := s.masquerades[node.Key]

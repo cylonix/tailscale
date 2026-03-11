@@ -559,7 +559,7 @@ func (nb *nodeBackend) exitNodeCanProxyDNS(exitNodeID tailcfg.StableNodeID) (doh
 	}
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
-	return exitNodeCanProxyDNS(nb.netMap, nb.peers, exitNodeID)
+	return exitNodeCanProxyDNS(nb.netMap, nb.peers, exitNodeID, nb.logf)
 }
 
 // ready signals that [LocalBackend] has completed the switch to this [nodeBackend]
@@ -810,7 +810,7 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 	// to run a DoH DNS proxy, then send all our DNS traffic through it,
 	// unless we find resolvers with UseWithExitNode set, in which case we use that.
 	if buildfeatures.HasUseExitNode {
-		if dohURL, ok := exitNodeCanProxyDNS(nm, peers, prefs.ExitNodeID()); ok {
+		if dohURL, ok := exitNodeCanProxyDNS(nm, peers, prefs.ExitNodeID(), logf); ok {
 			filtered := useWithExitNodeResolvers(nm.DNS.Resolvers)
 			if len(filtered) > 0 {
 				addDefault(filtered)

@@ -182,6 +182,11 @@ type CapabilityVersion int
 //   - 133: 2026-02-17: client understands [NodeAttrForceRegisterMagicDNSIPv4Only]; MagicDNS IPv6 registered w/ OS by default
 const CurrentCapabilityVersion CapabilityVersion = 133
 
+// CYLONIX_ADD: cylonix-side capability version that signals understanding of
+// MapResponse.L2DiscoveryRules. Independent of the upstream
+// CurrentCapabilityVersion progression so cylonix headscale can gate on it.
+const L2RelaySupportCapabilityVersion CapabilityVersion = 114
+
 // ID is an integer ID for a user, node, or login allocated by the
 // control plane.
 //
@@ -1723,6 +1728,23 @@ type FilterRule struct {
 	CapGrant []CapGrant `json:",omitempty"`
 }
 
+// __BEGIN_CYLONIX_ADD__
+// L2DiscoveryRule represents one rule for allowing discovery protocol relay.
+// This is evaluated in addition to L3 packet filter permissions.
+type L2DiscoveryRule struct {
+	// SrcIPs are source selectors in the same format as FilterRule.SrcIPs.
+	SrcIPs []string
+
+	// DstIPs are destination selectors in the same format as FilterRule.SrcIPs.
+	DstIPs []string
+
+	// Protocols are discovery protocols this rule applies to (for example:
+	// "mdns", "ssdp", "minecraft").
+	Protocols []string `json:",omitempty"`
+}
+
+// __END_CYLONIX_ADD__
+
 var FilterAllowAll = []FilterRule{
 	{
 		SrcIPs: []string{"*"},
@@ -2083,6 +2105,15 @@ type MapResponse struct {
 	// prior named packet filters (including any implicit "base") before
 	// processing the other map entries.
 	PacketFilters map[string][]FilterRule `json:",omitempty"`
+
+	// __BEGIN_CYLONIX_ADD__
+	// L2DiscoveryRules are discovery relay policy rules used for controlled
+	// forwarding of selected LAN discovery protocols.
+	//
+	// A nil value means unchanged from earlier in this stream.
+	// A non-nil empty slice means explicitly no discovery relay rules.
+	L2DiscoveryRules []L2DiscoveryRule `json:",omitempty"`
+	// __END_CYLONIX_ADD__
 
 	// UserProfiles are the user profiles of nodes in the network.
 	// As as of 1.1.541 (mapver 5), this contains new or updated
@@ -2761,6 +2792,28 @@ const (
 	// if the node is an exit node and prefers the DNS queries to be sent over
 	// the tunnel.
 	NodeSendDNSToMeInTunnel NodeCapability = "send-dns-to-me-in-tunnel"
+
+	// CYLONIX_ADD: l2 discovery relay capabilities.
+
+	// NodeCanRelayL2Discovery indicates that the node can relay LAN discovery
+	// like mDNS or WSD protocols to the peers.
+	NodeCanRelayL2Discovery NodeCapability = "can-relay-l2-discovery"
+
+	// NodeCanInjectL2Discovery indicates that the node can inject LAN discovery
+	// protocols into the local network and relay responses back to the peers
+	// that relayed the queries. This is typically used for Subnet Routers with
+	// l2 discovery relay enabled. Apple platforms may not support such
+	// capability unless running it out of the sandbox e.g. MacOS with Service
+	// instead of Network Extensions.
+	NodeCanInjectL2Discovery NodeCapability = "can-inject-l2-discovery"
+
+	// NodeHasL2DiscoverableService indicates that the node has a service that
+	// can be discovered via L2 discovery. This is to signal the presence of
+	// such a service to other nodes so that NodeCanRelayL2Discovery nodes can
+	// relay the discovery queries to itself. e.g. A NAS with Cylonix on it can
+	// set this capability to indicate that it has services discoverable via L2
+	// discovery protocols like mDNS or WSD.
+	NodeHasL2DiscoverableService NodeCapability = "has-l2-discoverable-service"
 )
 
 // SetDNSRequest is a request to add a DNS record.

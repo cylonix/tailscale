@@ -14,10 +14,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,6 +40,119 @@ type vmInstance struct {
 	done    chan struct{}
 	doneErr error // not written until done is closed
 }
+
+// __BEGIN_CYLONIX_ADD__
+func qemuAccelMode(qemuBinary string) string {
+	if v := strings.TrimSpace(*qemuAccel); v != "" && !strings.EqualFold(v, "auto") {
+		return v
+	}
+	switch runtime.GOOS {
+	case "linux":
+		return "kvm"
+	case "darwin":
+		// __BEGIN_CYLONIX_ADD__
+		if qemuSupportsAccel(qemuBinary, "hvf") {
+			return "hvf"
+		}
+		return "tcg"
+		// __END_CYLONIX_ADD__
+	default:
+		return "tcg"
+	}
+}
+
+// __BEGIN_CYLONIX_ADD__
+func qemuSupportsAccel(qemuBinary, accel string) bool {
+	out, err := exec.Command(qemuBinary, "-accel", "help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(out)), strings.ToLower(accel))
+}
+
+// __END_CYLONIX_ADD__
+
+// __END_CYLONIX_ADD__
+
+// __BEGIN_CYLONIX_ADD__
+func qemuBinaryForArch(arch string) string {
+	if arch == "arm64" {
+		return "qemu-system-aarch64"
+	}
+	return "qemu-system-x86_64"
+}
+
+func arm64DistroVariant(d Distro) (Distro, bool) {
+	switch d.Name {
+	case "ubuntu-18-04":
+		d.URL = "https://cloud-images.ubuntu.com/releases/bionic/release-20210817/ubuntu-18.04-server-cloudimg-arm64.img"
+		d.SHA256Sum = ""
+		return d, true
+	case "ubuntu-20-04":
+		d.URL = "https://cloud-images.ubuntu.com/releases/focal/release-20210819/ubuntu-20.04-server-cloudimg-arm64.img"
+		d.SHA256Sum = ""
+		return d, true
+	default:
+		return d, false
+	}
+}
+
+func distroForHost(d Distro) (Distro, string) {
+	if runtime.GOOS != "darwin" {
+		return d, "amd64"
+	}
+	if _, err := exec.LookPath("qemu-system-aarch64"); err != nil {
+		return d, "amd64"
+	}
+	if d.HostGenerated {
+		return d, "amd64"
+	}
+	if arm, ok := arm64DistroVariant(d); ok {
+		return arm, "arm64"
+	}
+	return d, "amd64"
+}
+
+func findAarch64Firmware() string {
+	candidates := []string{
+		"/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+		"/usr/local/share/qemu/edk2-aarch64-code.fd",
+		"/usr/share/qemu/edk2-aarch64-code.fd",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func distroCacheKey(d Distro) string {
+	if d.SHA256Sum != "" {
+		return d.SHA256Sum
+	}
+	sum := sha256.Sum256([]byte(d.Name + "|" + d.URL))
+	return hex.EncodeToString(sum[:])
+}
+
+func guestReachableHostURL(hostURL string) string {
+	u, err := url.Parse(hostURL)
+	if err != nil {
+		return hostURL
+	}
+	host := u.Hostname()
+	if host != "127.0.0.1" && host != "::1" && !strings.EqualFold(host, "localhost") {
+		return hostURL
+	}
+	port := u.Port()
+	if port == "" {
+		return hostURL
+	}
+	u.Host = net.JoinHostPort("10.0.2.2", port)
+	return u.String()
+}
+
+// __END_CYLONIX_ADD__
 
 func (vm *vmInstance) running() bool {
 	select {
@@ -73,6 +188,10 @@ func (h *Harness) makeImage(t *testing.T, d Distro, cdir string) string {
 // machine when it is time for it to die.
 func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir string) *vmInstance {
 	t.Helper()
+	// __BEGIN_CYLONIX_ADD__
+	d, guestArch := distroForHost(d)
+	qemuBinary := qemuBinaryForArch(guestArch)
+	// __END_CYLONIX_ADD__
 
 	cdir, err := os.UserCacheDir()
 	if err != nil {
@@ -94,23 +213,44 @@ func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir stri
 	}
 
 	mkLayeredQcow(t, tdir, d, qcowPath)
-	mkSeed(t, d, sshKey, hostURL, tdir, port)
+	mkSeed(t, d, sshKey, guestReachableHostURL(hostURL), tdir, port) // __CYLONIX_MOD__
 
 	driveArg := fmt.Sprintf("file=%s,if=virtio", filepath.Join(tdir, d.Name+".qcow2"))
 
+	// __BEGIN_CYLONIX_ADD__
+	accel := qemuAccelMode(qemuBinary)
+	cpu := "host"
+	if accel == "tcg" {
+		cpu = "max"
+	}
+	machine := fmt.Sprintf("q35,accel=%s,usb=off,vmport=off,dump-guest-core=off", accel)
+	netDevice := "virtio-net-pci"
+	if guestArch == "arm64" {
+		machine = fmt.Sprintf("virt,accel=%s", accel)
+		netDevice = "virtio-net-device"
+	} else if runtime.GOOS == "darwin" {
+		machine = fmt.Sprintf("q35,accel=%s,usb=off,vmport=off", accel) // __CYLONIX_MOD__
+	}
 	args := []string{
-		"-machine", "q35,accel=kvm,usb=off,vmport=off,dump-guest-core=off",
+		"-machine", machine, // __CYLONIX_MOD__
 		"-netdev", fmt.Sprintf("user,hostfwd=::%d-:22,id=net0", port),
-		"-device", "virtio-net-pci,netdev=net0,id=net0,mac=8a:28:5c:30:1f:25",
+		"-device", netDevice + ",netdev=net0,id=net0,mac=8a:28:5c:30:1f:25", // __CYLONIX_MOD__
 		"-m", fmt.Sprint(d.MemoryMegs),
-		"-cpu", "host",
+		"-cpu", cpu,
 		"-smp", "4",
 		"-boot", "c",
 		"-drive", driveArg,
 		"-cdrom", filepath.Join(tdir, d.Name, "seed", "seed.iso"),
-		"-smbios", "type=1,serial=ds=nocloud;h=" + d.Name,
 		"-nographic",
 	}
+	if guestArch != "arm64" {
+		args = append(args, "-smbios", "type=1,serial=ds=nocloud;h="+d.Name)
+	} else if fw := findAarch64Firmware(); fw != "" {
+		args = append(args, "-bios", fw)
+	} else {
+		t.Log("no AArch64 UEFI firmware found in standard paths; relying on qemu defaults")
+	}
+	// __END_CYLONIX_ADD__
 
 	if *useVNC {
 		// test listening on VNC port
@@ -124,9 +264,9 @@ func (h *Harness) mkVM(t *testing.T, n int, d Distro, sshKey, hostURL, tdir stri
 		args = append(args, "-display", "none")
 	}
 
-	t.Logf("running: qemu-system-x86_64 %s", strings.Join(args, " "))
+	t.Logf("running: %s %s", qemuBinary, strings.Join(args, " ")) // __CYLONIX_MOD__
 
-	cmd := exec.Command("qemu-system-x86_64", args...)
+	cmd := exec.Command(qemuBinary, args...) // __CYLONIX_MOD__
 	cmd.Stdout = &qemuLog{f: t.Logf}
 	cmd.Stderr = &qemuLog{f: t.Logf}
 	if err := cmd.Start(); err != nil {
@@ -193,6 +333,13 @@ var ansiEscCodeRE = regexp.MustCompile("\x1b" + `\[[0-?]*[ -/]*[@-~]`)
 func fetchFromS3(t *testing.T, fout *os.File, d Distro) bool {
 	t.Helper()
 
+	// __BEGIN_CYLONIX_ADD__
+	if strings.TrimSpace(d.SHA256Sum) == "" {
+		t.Log("no distro SHA256 provided; skipping S3 fetch")
+		return false
+	}
+	// __END_CYLONIX_ADD__
+
 	if *noS3 {
 		t.Log("you asked to not use S3, not using S3")
 		return false
@@ -238,11 +385,11 @@ func fetchDistro(t *testing.T, resultDistro Distro) string {
 	}
 	cdir = filepath.Join(cdir, "tailscale", "vm-test")
 
-	qcowPath := filepath.Join(cdir, "qcow2", resultDistro.SHA256Sum)
+	qcowPath := filepath.Join(cdir, "qcow2", distroCacheKey(resultDistro)) // __CYLONIX_MOD__
 
 	if _, err = os.Stat(qcowPath); err == nil {
 		hash := checkCachedImageHash(t, resultDistro, cdir)
-		if hash == resultDistro.SHA256Sum {
+		if resultDistro.SHA256Sum == "" || hash == resultDistro.SHA256Sum { // __CYLONIX_MOD__
 			return qcowPath
 		}
 		t.Logf("hash for %s (%s) doesn't match expected %s, re-downloading", resultDistro.Name, qcowPath, resultDistro.SHA256Sum)
@@ -284,7 +431,7 @@ func fetchDistro(t *testing.T, resultDistro Distro) string {
 
 		hash := checkCachedImageHash(t, resultDistro, cdir)
 
-		if hash != resultDistro.SHA256Sum {
+		if resultDistro.SHA256Sum != "" && hash != resultDistro.SHA256Sum { // __CYLONIX_MOD__
 			t.Fatalf("hash mismatch for %s, want: %s, got: %s", resultDistro.URL, resultDistro.SHA256Sum, hash)
 		}
 	}
@@ -295,7 +442,7 @@ func fetchDistro(t *testing.T, resultDistro Distro) string {
 func checkCachedImageHash(t *testing.T, d Distro, cacheDir string) string {
 	t.Helper()
 
-	qcowPath := filepath.Join(cacheDir, "qcow2", d.SHA256Sum)
+	qcowPath := filepath.Join(cacheDir, "qcow2", distroCacheKey(d)) // __CYLONIX_MOD__
 
 	fin, err := os.Open(qcowPath)
 	if err != nil {
@@ -309,8 +456,8 @@ func checkCachedImageHash(t *testing.T, d Distro, cacheDir string) string {
 	}
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	if hash != d.SHA256Sum {
-		t.Fatalf("hash mismatch, got: %q, want: %q", hash, d.SHA256Sum)
+	if d.SHA256Sum != "" && hash != d.SHA256Sum { // __CYLONIX_MOD__
+		t.Logf("hash mismatch, got: %q, want: %q", hash, d.SHA256Sum) // __CYLONIX_MOD__
 	}
 	return hash
 }
@@ -330,8 +477,11 @@ func (h *Harness) copyBinaries(t *testing.T, d Distro, conn *ssh.Client) {
 	mkdir(t, cli, "/etc/default")
 	mkdir(t, cli, "/var/lib/tailscale")
 
-	copyFile(t, cli, h.daemon, "/usr/sbin/tailscaled")
-	copyFile(t, cli, h.cli, "/usr/bin/tailscale")
+	// __BEGIN_CYLONIX_ADD__
+	bins := guestBinaries(t, guestArchForDistro(d))
+	copyFile(t, cli, bins.daemon, "/usr/sbin/tailscaled")
+	copyFile(t, cli, bins.cli, "/usr/bin/tailscale")
+	// __END_CYLONIX_ADD__
 
 	// TODO(Xe): revisit this assumption before it breaks the test.
 	copyFile(t, cli, "../../../cmd/tailscaled/tailscaled.defaults", "/etc/default/tailscaled")

@@ -71,8 +71,16 @@ func getLogTarget() string {
 		// CYLONIX_ADD: default log target to log.cylonix.io when not overridden.
 		if envTarget == "" {
 			envTarget = "https://log.cylonix.io/log"
+			log.Printf("TS_LOG_TARGET not set, using default log target %v", envTarget)
 		}
+		// CYLONIX_ADD: log resolution result and fall back to envTarget if
+		// policy returns an empty value.
 		getLogTargetOnce.v, _ = policyclient.Get().GetString(pkey.LogTarget, envTarget)
+		log.Printf("Using log target: %s, envTarget=%s", getLogTargetOnce.v, envTarget)
+		if getLogTargetOnce.v == "" {
+			getLogTargetOnce.v = envTarget
+		}
+		log.Printf("Final log target: %s", getLogTargetOnce.v)
 	})
 
 	return getLogTargetOnce.v
@@ -81,6 +89,7 @@ func getLogTarget() string {
 // LogURL is the base URL for the configured logtail server, or the default.
 // It is guaranteed to not terminate with any forward slashes.
 func LogURL() string {
+	log.Printf("logpolicy.LogURL: getLogTarget()=%v", getLogTarget())
 	if v := getLogTarget(); v != "" {
 		return strings.TrimRight(v, "/")
 	}

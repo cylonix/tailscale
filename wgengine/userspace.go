@@ -1855,4 +1855,8 @@ func (e *userspaceEngine) SetTunnelName(tunName string) {
 	})
 }
 
+func (e *userspaceEngine) InjectInboundRaw(pkt []byte) error {
+	return e.tundev.InjectInboundCopy(pkt)
+}
+
 // __END_CYLONIX_ADD__

@@ -375,6 +375,9 @@ var dummyPacket = []byte{
 // Check determines whether traffic from srcIP to dstIP:dstPort is allowed
 // using protocol proto.
 func (f *Filter) Check(srcIP, dstIP netip.Addr, dstPort uint16, proto ipproto.Proto) Response {
+	return f.check(srcIP, dstIP, dstPort, proto, in)
+}
+func (f *Filter) check(srcIP, dstIP netip.Addr, dstPort uint16, proto ipproto.Proto, dir direction) Response {
 	pkt := &packet.Parsed{}
 	pkt.Decode(dummyPacket) // initialize private fields
 	switch {
@@ -396,6 +399,13 @@ func (f *Filter) Check(srcIP, dstIP netip.Addr, dstPort uint16, proto ipproto.Pr
 		pkt.TCPFlags = packet.TCPSyn
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	if dir == out {
+		r, _ := f.RunOut(pkt, 0)
+		return r
+	}
+	// __ADD_CYLONIX_ADD__
+
 	return f.RunIn(pkt, 0)
 }
 
@@ -404,6 +414,17 @@ func (f *Filter) Check(srcIP, dstIP netip.Addr, dstPort uint16, proto ipproto.Pr
 func (f *Filter) CheckTCP(srcIP, dstIP netip.Addr, dstPort uint16) Response {
 	return f.Check(srcIP, dstIP, dstPort, ipproto.TCP)
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (f *Filter) CheckTCPWithDir(srcIP, dstIP netip.Addr, dstPort uint16, isInput bool) Response {
+	dir := out
+	if isInput {
+		dir = in
+	}
+	return f.check(srcIP, dstIP, dstPort, ipproto.TCP, dir)
+}
+
+// __END_CYLONIX_ADD__
 
 // CapsWithValues appends to base the capabilities that srcIP has talking
 // to dstIP.

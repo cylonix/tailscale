@@ -39,7 +39,7 @@ func retry(t *testing.T, fn func() error) {
 func (h *Harness) testPing(t *testing.T, ipAddr netip.Addr, cli *ssh.Client) {
 	retry(t, func() error {
 		sess := getSession(t, cli)
-		cmd := fmt.Sprintf("tailscale ping --verbose %s", ipAddr)
+		cmd := fmt.Sprintf("tailscale --socket=/run/tailscale/tailscaled.sock ping --verbose %s", ipAddr) // __CYLONIX_MOD__
 		outp, err := sess.CombinedOutput(cmd)
 		if err == nil && !bytes.Contains(outp, []byte("pong")) {
 			err = fmt.Errorf("%s: no pong", cmd)

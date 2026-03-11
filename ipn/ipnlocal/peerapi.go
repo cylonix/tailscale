@@ -249,6 +249,13 @@ func (h *peerAPIHandler) Logf(format string, a ...any) {
 	h.logf(format, a...)
 }
 
+// __BEGIN_CYLONIX_ADD__
+func (h *peerAPIHandler) RemoteAddr() netip.AddrPort {
+	return h.remoteAddr
+}
+
+// __END_CYLONIX_ADD__
+
 func (h *peerAPIHandler) logf(format string, a ...any) {
 	h.ps.b.logf("peerapi: "+format, a...)
 }

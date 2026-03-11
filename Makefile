@@ -156,6 +156,21 @@ generate: ## Generate code
 pin-github-actions:
 	./tool/go tool github.com/stacklok/frizbee actions .github/workflows
 
+# CYLONIX_ADD: l2relay test targets.
+.PHONY: l2relaytest-local l2relaytest-container l2relaytest-vm
+l2relaytest-local: ## Run local userspace multi-node integration test (no containers/VMs)
+	./tool/go test ${L2TEST_FLAG} ./wgengine/netstack -run TestShouldProcessInbound/l2relay-peerapi-intercept-local-ip-without-process-local-ips -count=1
+	./tool/go test ${L2TEST_FLAG} ./ipn/l2relay -count=1
+	./tool/go test ${L2TEST_FLAG} ./tstest/integration -run TestL2DiscoveryRulesUserspaceMultiNode -count=1
+
+l2relaytest-container: ## Run a lighter container integration pass on one distro (ubuntu:focal)
+	@GOOS=linux GOARCH=amd64 ./tool/go test -tags integrationtest -c ./ssh/tailssh -o ssh/tailssh/testcontainers/tailssh.test && \
+	GOOS=linux GOARCH=amd64 ./tool/go build -o ssh/tailssh/testcontainers/tailscaled ./cmd/tailscaled && \
+	echo "Testing on ubuntu:focal (lite)" && docker build --build-arg="BASE=ubuntu:focal" -t ssh-ubuntu-focal ssh/tailssh/testcontainers
+
+l2relaytest-vm: ## Run VM-based L2 integration test with mac-friendly defaults
+	PATH="$(PWD)/.tools/bin:$$PATH" ./tool/go test ${L2TEST_FLAG} ./tstest/integration/vms -run 'TestVML2DiscoveryRulesConnectivity|TestVML2RelayUDPInterceptE2E|TestVML2RelayNASShareE2E' -count=1 --run-vm-tests --no-s3
+
 help: ## Show this help
 	@echo ""
 	@echo "Specify a command. The choices are:"

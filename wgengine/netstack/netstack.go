@@ -1194,6 +1194,14 @@ func (ns *Impl) shouldProcessInbound(p *packet.Parsed, t *tstun.Wrapper) bool {
 			return true
 		}
 	}
+	// CYLONIX_ADD: let LocalBackend (l2relay) ask to intercept UDP packets
+	// destined to local IPs, e.g. for mDNS / WSD relaying.
+	if ns.lb != nil && p.IPProto == ipproto.UDP && isLocal {
+		if ns.lb.ShouldInterceptUDPPort(p.Dst.Port()) {
+			ns.logf("netstack: shouldProcessInbound UDP local intercept src=%v dst=%v", p.Src, p.Dst)
+			return true
+		}
+	}
 	if buildfeatures.HasServe && isService {
 		if p.IsEchoRequest() {
 			return true
@@ -1846,6 +1854,20 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 			return false // Only MagicDNS and loopback traffic runs on the service IPs for now.
 		}
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	if ns.lb != nil {
+		h, intercept := ns.lb.UDPHandlerForDst(srcAddr, dstAddr)
+		if intercept {
+			if h == nil {
+				ep.Close()
+				return false
+			}
+			go h(gonet.NewUDPConn(&wq, ep))
+			return true
+		}
+	}
+	// __END_CYLONIX_ADD__
 
 	if get := ns.GetUDPHandlerForFlow; get != nil {
 		h, intercept := get(srcAddr, dstAddr)

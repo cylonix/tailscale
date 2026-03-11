@@ -45,6 +45,14 @@ func (b *LocalBackend) TCPHandlerForDst(src, dst netip.AddrPort) (handler func(c
 	if !b.isLocalIP(dst.Addr()) {
 		return nil, nil
 	}
+	// CYLONIX_ADD: give the l2relay manager first crack at the flow so it
+	// can handle WSD-over-TCP and similar protocol forwarding before any
+	// of the other local-IP handlers below run.
+	if b.l2Relay != nil {
+		if h, ok := b.l2Relay.TCPHandlerForFlow(src, dst); ok {
+			return h, opts
+		}
+	}
 	if dst.Port() == 22 && b.ShouldRunSSH() {
 		// Use a higher keepalive idle time for SSH connections, as they are
 		// typically long lived and idle connections are more likely to be

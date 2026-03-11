@@ -95,9 +95,10 @@ var handler = map[string]LocalAPIHandler{
 	"status":               (*Handler).serveStatus,
 	"whois":                (*Handler).serveWhoIs,
 	// CYLONIX_ADD: cylonix-only LocalAPI endpoints.
-	"cap":     (*Handler).serveCap,
-	"envknob": (*Handler).serveEnvknob,
-	"log":     (*Handler).serveLog,
+	"cap":             (*Handler).serveCap,
+	"envknob":         (*Handler).serveEnvknob,
+	"l2relay-capture": (*Handler).serveL2RelayCapture,
+	"log":             (*Handler).serveLog,
 }
 
 func init() {
@@ -1926,5 +1927,35 @@ func (h *Handler) serveCap(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// CYLONIX_ADD: L2 relay capture toggle endpoint.
+func (h *Handler) serveL2RelayCapture(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if !h.PermitRead {
+			http.Error(w, "l2relay capture access denied", http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{
+			"enabled": h.b.L2RelayCaptureEnabled(),
+		})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "use GET or POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.PermitWrite {
+		http.Error(w, "l2relay capture access denied", http.StatusForbidden)
+		return
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(r.FormValue("enabled")))
+	if err != nil {
+		http.Error(w, "bad 'enabled' value", http.StatusBadRequest)
+		return
+	}
+	h.b.SetL2RelayCaptureEnabled(enabled)
+	_ = json.NewEncoder(w).Encode(map[string]bool{
+		"enabled": enabled,
+	})
+}
+
 // (CYLONIX_ADD block ends.)
->

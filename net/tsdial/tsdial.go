@@ -267,6 +267,9 @@ func (d *Dialer) linkChanged(delta *netmon.ChangeDelta) {
 	if delta.DefaultRouteInterface == "" {
 		metricChangeDeltaNoDefaultRoute.Add(1)
 	}
+	// PeerAPI HTTP transport can hold stale idle TCP conns across suspend/resume
+	// or interface changes; force fresh dials after link changes.
+	d.PeerAPITransport().CloseIdleConnections()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -540,13 +543,38 @@ func (d *Dialer) dialPeerAPI(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, fmt.Errorf("peerAPI dial requires ip:port, not name resolution: %w", err)
 	}
-	if d.UseNetstackForIP != nil && d.UseNetstackForIP(ipp.Addr()) {
-		if d.NetstackDialTCP == nil {
-			return nil, errors.New("Dialer not initialized correctly")
-		}
-		return d.NetstackDialTCP(ctx, ipp)
+	return d.peerDial(ctx, network, ipp)
+}
+
+// PeerDial dials a peer endpoint directly using the same dial path as PeerAPI:
+// netstack when configured for the destination IP, else the peer dialer with
+// platform-specific peer control hooks (for example Network Extension binding).
+func (d *Dialer) PeerDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	ipp, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("peer dial requires ip:port, not name resolution: %w", err)
 	}
-	return d.getPeerDialer().DialContext(ctx, network, addr)
+	return d.peerDial(ctx, network, ipp)
+}
+
+func (d *Dialer) peerDial(ctx context.Context, network string, ipp netip.AddrPort) (net.Conn, error) {
+	if d.UseNetstackForIP != nil && d.UseNetstackForIP(ipp.Addr()) {
+		switch network {
+		case "tcp", "tcp4", "tcp6":
+			if d.NetstackDialTCP == nil {
+				return nil, errors.New("Dialer not initialized correctly")
+			}
+			return d.NetstackDialTCP(ctx, ipp)
+		case "udp", "udp4", "udp6":
+			if d.NetstackDialUDP == nil {
+				return nil, errors.New("Dialer not initialized correctly")
+			}
+			return d.NetstackDialUDP(ctx, ipp)
+		default:
+			return nil, fmt.Errorf("peer dial network %q not supported", network)
+		}
+	}
+	return d.getPeerDialer().DialContext(ctx, network, ipp.String())
 }
 
 // getPeerDialer returns the *net.Dialer to use to dial peers (e.g. for peerapi,
