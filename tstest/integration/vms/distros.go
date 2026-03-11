@@ -35,8 +35,9 @@ func (d *Distro) InstallPre() string {
 		return ` - [ dnf, install, "-y", iptables ]`
 
 	case "apt":
-		return ` - [ apt-get, update ]
- - [ apt-get, "-y", install, curl, "apt-transport-https", gnupg2 ]`
+		// __BEGIN_CYLONIX_MOD__
+		return ` - [ apt-get, "-y", install, curl, "apt-transport-https", gnupg2 ]`
+		// __END_CYLONIX_MOD__
 
 	case "apk":
 		return ` - [ apk, "-U", add, curl, "ca-certificates", iptables, ip6tables ]

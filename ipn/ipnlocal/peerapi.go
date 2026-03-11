@@ -231,7 +231,8 @@ type PeerAPIHandler interface {
 	PeerCaps() tailcfg.PeerCapMap
 	Self() tailcfg.NodeView
 	LocalBackend() *LocalBackend
-	IsSelfUntagged() bool // whether the peer is untagged and the same as this user
+	IsSelfUntagged() bool       // whether the peer is untagged and the same as this user
+	RemoteAddr() netip.AddrPort // __CYLONIX_ADD__
 }
 
 func (h *peerAPIHandler) IsSelfUntagged() bool {
@@ -240,6 +241,13 @@ func (h *peerAPIHandler) IsSelfUntagged() bool {
 func (h *peerAPIHandler) Peer() tailcfg.NodeView      { return h.peerNode }
 func (h *peerAPIHandler) Self() tailcfg.NodeView      { return h.selfNode }
 func (h *peerAPIHandler) LocalBackend() *LocalBackend { return h.ps.b }
+
+// __BEGIN_CYLONIX_ADD__
+func (h *peerAPIHandler) RemoteAddr() netip.AddrPort {
+	return h.remoteAddr
+}
+
+// __END_CYLONIX_ADD__
 
 func (h *peerAPIHandler) logf(format string, a ...any) {
 	h.ps.b.logf("peerapi: "+format, a...)
@@ -751,7 +759,7 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		case taildrop.ErrNoTaildrop:
 			http.Error(w, err.Error(), http.StatusForbidden)
 		case taildrop.ErrInvalidFileName:
-			http.Error(w, err.Error() + ": " + baseName, http.StatusBadRequest) // __CYLONIX_MOD__
+			http.Error(w, err.Error()+": "+baseName, http.StatusBadRequest) // __CYLONIX_MOD__
 		case taildrop.ErrFileExists:
 			http.Error(w, err.Error(), http.StatusConflict)
 		default:

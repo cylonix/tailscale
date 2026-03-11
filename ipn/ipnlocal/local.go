@@ -60,6 +60,7 @@ import (
 	"tailscale.com/ipn/conffile"
 	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/ipn/l2relay"
 	"tailscale.com/ipn/policy"
 	"tailscale.com/log/sockstatlog"
 	"tailscale.com/logpolicy"
@@ -91,6 +92,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/netmap"
+	"tailscale.com/types/nettype" // __CYLONIX_ADD__
 	"tailscale.com/types/opt"
 	"tailscale.com/types/persist"
 	"tailscale.com/types/preftype"
@@ -231,6 +233,7 @@ type LocalBackend struct {
 	filterAtomic                            atomic.Pointer[filter.Filter]
 	containsViaIPFuncAtomic                 syncs.AtomicValue[func(netip.Addr) bool]
 	shouldInterceptTCPPortAtomic            syncs.AtomicValue[func(uint16) bool]
+	shouldInterceptUDPPortAtomic            syncs.AtomicValue[func(uint16) bool] // __CYLONIX_ADD__
 	shouldInterceptVIPServicesTCPPortAtomic syncs.AtomicValue[func(netip.AddrPort) bool]
 	numClientStatusCalls                    atomic.Uint32
 
@@ -283,6 +286,7 @@ type LocalBackend struct {
 	prevIfState      *netmon.State
 	peerAPIServer    *peerAPIServer // or nil
 	peerAPIListeners []*peerAPIListener
+	l2Relay          *l2relay.Manager // L2 discovery relay manager for selective protocol forwarding. __CYLONIX_ADD__
 	loginFlags       controlclient.LoginFlags
 	fileWaiters      set.HandleSet[context.CancelFunc] // of wake-up funcs
 	notifyWatchers   map[string]*watchSession          // by session ID
@@ -400,6 +404,9 @@ func (b *LocalBackend) UserMetricsRegistry() *usermetric.Registry {
 
 // NetMon returns the network monitor for the backend.
 func (b *LocalBackend) NetMon() *netmon.Monitor {
+	if b.sys == nil {
+		return nil
+	}
 	return b.sys.NetMon.Get()
 }
 
@@ -492,6 +499,9 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 		captiveCancel:         nil, // so that we start checkCaptivePortalLoop when Running
 		needsCaptiveDetection: make(chan bool),
 	}
+
+	b.l2Relay = l2relay.NewManager(b) // __CYLONIX_ADD__
+
 	mConn.SetNetInfoCallback(b.setNetInfo)
 
 	if sys.InitialConfig != nil {
@@ -537,6 +547,9 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 	b.unregisterNetMon = netMon.RegisterChangeCallback(b.linkChange)
 
 	b.unregisterHealthWatch = b.health.RegisterWatcher(b.onHealthChange)
+	if b.l2Relay != nil {
+		b.goTracker.Go(b.l2RelayLoop) // __CYLONIX_ADD__
+	}
 
 	if tunWrap, ok := b.sys.Tun.GetOK(); ok {
 		tunWrap.PeerAPIPort = b.GetPeerAPIPort
@@ -1041,6 +1054,13 @@ func (b *LocalBackend) Shutdown() {
 	b.unregisterNetMon()
 	b.unregisterHealthWatch()
 	b.unregisterSysPolicyWatch()
+
+	// __BEGIN_CYLONIX_ADD__
+	if b.l2Relay != nil {
+		b.l2Relay.Close()
+	}
+	// __END_CYLONIX_ADD__
+
 	if cc != nil {
 		cc.Shutdown()
 	}
@@ -4296,6 +4316,11 @@ func (b *LocalBackend) TCPHandlerForDst(src, dst netip.AddrPort) (handler func(c
 	if !b.isLocalIP(dst.Addr()) {
 		return nil, nil
 	}
+	if b.l2Relay != nil {
+		if h, ok := b.l2Relay.TCPHandlerForFlow(src, dst); ok {
+			return h, opts
+		}
+	}
 	if dst.Port() == 22 && b.ShouldRunSSH() {
 		// Use a higher keepalive idle time for SSH connections, as they are
 		// typically long lived and idle connections are more likely to be
@@ -4321,6 +4346,66 @@ func (b *LocalBackend) TCPHandlerForDst(src, dst netip.AddrPort) (handler func(c
 	}
 	return nil, nil
 }
+
+// __BEGIN_CYLONIX_ADD__
+// UDPHandlerForDst returns a UDP flow handler for packets to dst.
+// If intercept is false, netstack continues with normal forwarding.
+func (b *LocalBackend) UDPHandlerForDst(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool) {
+	if b.l2Relay != nil {
+		if h, ok := b.l2Relay.UDPHandlerForFlow(src, dst); ok {
+			b.logf("[v2] l2relay: UDPHandlerForDst intercept src=%v dst=%v", src, dst)
+			return h, true
+		}
+	}
+	if dst.Port() == l2relay.DataPort {
+		b.logf("[v2] l2relay: UDPHandlerForDst no intercept src=%v dst=%v l2RelayNil=%v", src, dst, b.l2Relay == nil)
+	}
+	return nil, false
+}
+
+func (b *LocalBackend) l2RelayLoop() {
+	b.logf("l2relay: loop start") // __CYLONIX_ADD__
+	if b.l2Relay != nil {
+		b.l2Relay.StartCapture(b.ctx)
+	}
+	t := time.NewTicker(20 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-b.ctx.Done():
+			b.logf("l2relay: loop stop (context done)") // __CYLONIX_ADD__
+			return
+		case <-t.C:
+			if b.l2Relay != nil {
+				ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+				b.l2Relay.MaybeSendHelloToPeers(ctx)
+				cancel()
+			}
+		}
+	}
+}
+
+func (b *LocalBackend) SetL2RelayCaptureEnabled(enabled bool) {
+	b.mu.Lock()
+	relay := b.l2Relay
+	b.mu.Unlock()
+	if relay == nil {
+		return
+	}
+	relay.SetCaptureEnabled(enabled)
+}
+
+func (b *LocalBackend) L2RelayCaptureEnabled() bool {
+	b.mu.Lock()
+	relay := b.l2Relay
+	b.mu.Unlock()
+	if relay == nil {
+		return false
+	}
+	return relay.CaptureEnabled()
+}
+
+// __END_CYLONIX_ADD__
 
 func (b *LocalBackend) handleDriveConn(conn net.Conn) error {
 	fs, ok := b.sys.DriveForLocal.GetOK()
@@ -4685,7 +4770,7 @@ func (b *LocalBackend) authReconfig() {
 	disableSubnetsIfPAC := nm.HasCap(tailcfg.NodeAttrDisableSubnetsIfPAC)
 	userDialUseRoutes := nm.HasCap(tailcfg.NodeAttrUserDialUseRoutes)
 	exitNodeWantDNSInTunnel := b.exitNodeWantDNSInTunnelLocked(nm) // __CYLONIX_ADD__
-	dohURL, dohURLOK := exitNodeCanProxyDNS(nm, b.peers, prefs.ExitNodeID())
+	dohURL, dohURLOK := exitNodeCanProxyDNS(nm, b.peers, prefs.ExitNodeID(), b.logf)
 	dcfg := dnsConfigForNetmap(nm, b.peers, prefs, b.keyExpired, b.logf, version.OS())
 	// If the current node is an app connector, ensure the app connector machine is started
 	b.reconfigAppConnectorLocked(nm, prefs)
@@ -4891,6 +4976,7 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 	}
 
 	if !prefs.CorpDNS() {
+		logf("dcfg: CorpDNS is disabled; not configuring search domains or routes")
 		return dcfg
 	}
 
@@ -4913,9 +4999,16 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 
 	// If we're using an exit node and that exit node is new enough (1.19.x+)
 	// to run a DoH DNS proxy, then send all our DNS traffic through it.
-	if dohURL, ok := exitNodeCanProxyDNS(nm, peers, prefs.ExitNodeID()); ok {
+	if dohURL, ok := exitNodeCanProxyDNS(nm, peers, prefs.ExitNodeID(), logf); ok {
 		addDefault([]*dnstype.Resolver{{Addr: dohURL}})
+		r := dnstype.Resolver{}
+		if len(dcfg.DefaultResolvers) >= 1 {
+			r = *dcfg.DefaultResolvers[len(dcfg.DefaultResolvers)-1]
+		}
+		logf("dcfg: Using exit node DNS proxy: %v. default=%#v", dohURL, r)
 		return dcfg
+	} else {
+		logf("dcfg: Not using exit node DNS proxy: %v", dohURL)
 	}
 
 	// If the user has set default resolvers ("override local DNS"), prefer to
@@ -4925,6 +5018,11 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 		addDefault(nm.DNS.Resolvers)
 	} else {
 		if resolvers, ok := wireguardExitNodeDNSResolvers(nm, peers, prefs.ExitNodeID()); ok {
+			r := dnstype.Resolver{}
+			if len(resolvers) >= 1 {
+				r = *resolvers[len(resolvers)-1]
+			}
+			logf("dcfg: Using exit node WireGuard DNS resolvers as default: %#v", r)
 			addDefault(resolvers)
 		}
 	}
@@ -4947,6 +5045,7 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 		// unclear, this is a haunted graveyard to be resolved.
 		dcfg.Routes[fqdn] = make([]*dnstype.Resolver, 0, len(resolvers))
 		dcfg.Routes[fqdn] = append(dcfg.Routes[fqdn], resolvers...)
+		//b.logf("dcfg: Added route for %q with resolvers: %#v", fqdn, resolvers)
 	}
 
 	// Set FallbackResolvers as the default resolvers in the
@@ -4970,6 +5069,11 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.
 		// settings or we break all DNS resolution.
 		//
 		// https://github.com/tailscale/tailscale/issues/1713
+		r := dnstype.Resolver{}
+		if len(dcfg.DefaultResolvers) >= 1 {
+			r = *dcfg.DefaultResolvers[len(dcfg.DefaultResolvers)-1]
+		}
+		logf("dcfg: Using fallback resolvers as default because using exit node without DoH support. default=%#v", r)
 		addDefault(nm.DNS.FallbackResolvers)
 	case len(dcfg.Routes) == 0:
 		// No settings requiring split DNS, no problem.
@@ -6010,6 +6114,11 @@ func (b *LocalBackend) setNetMapLocked(nm *netmap.NetworkMap) {
 
 	b.setTCPPortsInterceptedFromNetmapAndPrefsLocked(b.pm.CurrentPrefs())
 	b.ipVIPServiceMap = nm.GetIPVIPServiceMap()
+	// __BEGIN_CYLONIX_ADD__
+	if b.l2Relay != nil {
+		b.l2Relay.SetNetMap(nm)
+	}
+	// __END_CYLONIX_ADD__
 	if nm == nil {
 		b.nodeByAddr = nil
 
@@ -6916,15 +7025,19 @@ func (b *LocalBackend) SetDeviceAttrs(ctx context.Context, attrs tailcfg.AttrUpd
 // to exitNodeID's DoH service, if available.
 //
 // If exitNodeID is the zero valid, it returns "", false.
-func exitNodeCanProxyDNS(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.NodeView, exitNodeID tailcfg.StableNodeID) (dohURL string, ok bool) {
+func exitNodeCanProxyDNS(nm *netmap.NetworkMap, peers map[tailcfg.NodeID]tailcfg.NodeView, exitNodeID tailcfg.StableNodeID, logf logger.Logf) (dohURL string, ok bool) {
 	if exitNodeID.IsZero() {
+		logf("dcfg: exit node DNS proxy disabled: no exit node")
 		return "", false
 	}
 	for _, p := range peers {
-		if p.StableID() == exitNodeID && peerCanProxyDNS(p) {
+		if p.StableID() == exitNodeID && peerCanProxyDNS(p, logf) {
 			return peerAPIBase(nm, p) + "/dns-query", true
+		} else if p.StableID() == exitNodeID {
+			logf("dcfg: exit node DNS proxy disabled: exit node peer %q does not support DNS proxying", p.Name())
 		}
 	}
+	logf("dcfg: exit node DNS proxy disabled: exit node cannot proxy DNS")
 	return "", false
 }
 
@@ -6967,7 +7080,7 @@ func wireguardExitNodeDNSResolvers(nm *netmap.NetworkMap, peers map[tailcfg.Node
 	return nil, false
 }
 
-func peerCanProxyDNS(p tailcfg.NodeView) bool {
+func peerCanProxyDNS(p tailcfg.NodeView, logf logger.Logf) bool {
 	if p.Cap() >= 26 {
 		// Actually added at 25
 		// (https://github.com/tailscale/tailscale/blob/3ae6f898cfdb58fd0e30937147dd6ce28c6808dd/tailcfg/tailcfg.go#L51)
@@ -6980,8 +7093,12 @@ func peerCanProxyDNS(p tailcfg.NodeView) bool {
 	for _, s := range services.All() {
 		if s.Proto == tailcfg.PeerAPIDNS && s.Port >= 1 {
 			return true
+		} else if s.Proto == tailcfg.PeerAPIDNS {
+			// Port 0 is invalid, but if it's present, it means the peer supports DNS proxying.
+			logf("dcfg: exit node DNS proxy disabled: exit node peer %q does not support DNS proxying port=%v", p.Name(), s.Port)
 		}
 	}
+	logf("dcfg: exit node DNS proxy disabled: exit node peer %q does not support DNS proxying. No peer dns service enabled", p.Name())
 	return false
 }
 
@@ -7003,6 +7120,7 @@ func (b *LocalBackend) ResetNoiseConnections() {
 		cc.ResetNoiseConnections()
 	}
 }
+
 // __END_CYLONIX_ADD__
 
 func (b *LocalBackend) DebugReSTUN() error {
@@ -7257,6 +7375,35 @@ func (b *LocalBackend) SetDevStateStore(key, value string) error {
 func (b *LocalBackend) ShouldInterceptTCPPort(port uint16) bool {
 	return b.shouldInterceptTCPPortAtomic.Load()(port)
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (b *LocalBackend) ShouldInterceptUDPPort(port uint16) bool {
+	return b.shouldInterceptUDPPortAtomic.Load()(port)
+}
+
+// StoreTestFilter is a test-only helper that replaces filterAtomic directly
+// without triggering regular reconfiguration side effects.
+func (b *LocalBackend) StoreTestFilter(f *filter.Filter) {
+	b.filterAtomic.Store(f)
+}
+
+// SetTestNetmap is a test-only helper that sets netMap directly
+// without running the regular netmap update handling pipeline.
+func (b *LocalBackend) SetTestNetmap(nm *netmap.NetworkMap) {
+	b.mu.Lock()
+	b.netMap = nm
+	b.mu.Unlock()
+}
+
+func (b *LocalBackend) Filter() *filter.Filter {
+	return b.filterAtomic.Load()
+}
+
+func (b *LocalBackend) PeerAPIBase(peer tailcfg.NodeView) string {
+	return peerAPIBase(b.NetMap(), peer)
+}
+
+// __END_CYLONIX_ADD__
 
 // ShouldInterceptVIPServiceTCPPort reports whether the given TCP port number
 // to a VIP service should be intercepted by Tailscaled and handled in-process.

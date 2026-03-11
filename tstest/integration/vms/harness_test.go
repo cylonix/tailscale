@@ -8,6 +8,8 @@ package vms
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -17,6 +19,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -25,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstest"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/dnstype"
@@ -44,6 +48,110 @@ type Harness struct {
 	ipMu           *sync.Mutex
 	ipMap          map[string]ipMapping
 }
+
+// __BEGIN_CYLONIX_ADD__
+var vmGuestBins struct {
+	mu   sync.Mutex
+	bins map[string]guestBinPair
+}
+
+type guestBinPair struct {
+	cli    string
+	daemon string
+}
+
+func guestBinaries(t *testing.T, arch string) guestBinPair {
+	t.Helper()
+	vmGuestBins.mu.Lock()
+	defer vmGuestBins.mu.Unlock()
+	if vmGuestBins.bins == nil {
+		vmGuestBins.bins = map[string]guestBinPair{}
+	}
+	if bins, ok := vmGuestBins.bins[arch]; ok {
+		return bins
+	}
+	bins := buildGuestBinaries(t, arch)
+	vmGuestBins.bins[arch] = bins
+	return bins
+}
+
+func buildGuestBinaries(t *testing.T, arch string) guestBinPair {
+	t.Helper()
+	outDir := vmGuestBinaryCacheDir(t, arch)
+	goBin := filepath.Clean("../../../tool/go")
+	if _, err := os.Stat(goBin); err != nil {
+		if p, lpErr := exec.LookPath("go"); lpErr == nil {
+			goBin = p
+		} else {
+			t.Fatalf("can't find go tool: %v", err)
+		}
+	}
+	build := func(outPath, pkg string) {
+		cmd := exec.Command(goBin, "build", "-o", outPath, pkg)
+		cmd.Env = append(os.Environ(),
+			"GOOS=linux",
+			"GOARCH="+arch,
+			"CGO_ENABLED=0",
+		)
+		tstest.FixLogs(t)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s for linux/%s failed: %v, %s", pkg, arch, err, out)
+		}
+	}
+	cli := filepath.Join(outDir, "tailscale")
+	daemon := filepath.Join(outDir, "tailscaled")
+	if _, err := os.Stat(cli); err != nil {
+		build(cli, "tailscale.com/cmd/tailscale")
+	}
+	if _, err := os.Stat(daemon); err != nil {
+		build(daemon, "tailscale.com/cmd/tailscaled")
+	}
+	return guestBinPair{cli: cli, daemon: daemon}
+}
+
+func vmGuestBinaryCacheDir(t *testing.T, arch string) string {
+	t.Helper()
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("can't locate user cache dir: %v", err)
+	}
+	key := vmGuestBinaryBuildKey(t)
+	dir := filepath.Join(cacheRoot, "tailscale", "vm-test", "guestbins", key, arch)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("can't create VM guest binary cache dir %q: %v", dir, err)
+	}
+	return dir
+}
+
+func vmGuestBinaryBuildKey(t *testing.T) string {
+	t.Helper()
+	if env := os.Getenv("TS_VM_GUEST_BIN_KEY"); env != "" {
+		return env
+	}
+	out, err := exec.Command("git", "rev-parse", "HEAD").CombinedOutput()
+	if err == nil {
+		rev := string(bytes.TrimSpace(out))
+		if rev != "" {
+			return rev
+		}
+	}
+	// Fallback: stable key per process when git metadata isn't available.
+	sum := sha256.Sum256([]byte(time.Now().UTC().Format("20060102")))
+	return hex.EncodeToString(sum[:8])
+}
+
+func guestArchForDistro(d Distro) string {
+	_, arch := distroForHost(d)
+	if arch == "arm64" || arch == "amd64" {
+		return arch
+	}
+	if runtime.GOARCH == "arm64" {
+		return "arm64"
+	}
+	return "amd64"
+}
+
+// __END_CYLONIX_ADD__
 
 func newHarness(t *testing.T) *Harness {
 	dir := t.TempDir()

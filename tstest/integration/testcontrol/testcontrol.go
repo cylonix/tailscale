@@ -52,8 +52,10 @@ type Server struct {
 	RequireAuthKey string // required authkey for all nodes
 	Verbose        bool
 	DNSConfig      *tailcfg.DNSConfig // nil means no DNS config
-	MagicDNSDomain string
-	HandleC2N      http.Handler // if non-nil, used for /some-c2n-path/ in tests
+	// L2DiscoveryRules are included in map responses to drive discovery relay policy.
+	L2DiscoveryRules []tailcfg.L2DiscoveryRule // __CYLONIX_ADD__
+	MagicDNSDomain   string
+	HandleC2N        http.Handler // if non-nil, used for /some-c2n-path/ in tests
 
 	// ExplicitBaseURL or HTTPTestServer must be set.
 	ExplicitBaseURL string           // e.g. "http://127.0.0.1:1234" with no trailing URL
@@ -421,6 +423,16 @@ func (s *Server) SetNodeCapMap(nodeKey key.NodePublic, capMap tailcfg.NodeCapMap
 	mak.Set(&s.nodeCapMaps, nodeKey, capMap)
 	s.updateLocked("SetNodeCapMap", s.nodeIDsLocked(0))
 }
+
+// __BEGIN_CYLONIX_ADD__
+// SetL2DiscoveryRules sets the L2 discovery rules returned in map responses.
+func (s *Server) SetL2DiscoveryRules(rules []tailcfg.L2DiscoveryRule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.L2DiscoveryRules = slices.Clone(rules)
+	s.updateLocked("SetL2DiscoveryRules", s.nodeIDsLocked(0))
+}
+// __END_CYLONIX_ADD__
 
 // nodeIDsLocked returns the node IDs of all nodes in the server, except
 // for the node with the given ID.
@@ -968,6 +980,7 @@ func (s *Server) MapResponse(req *tailcfg.MapRequest) (res *tailcfg.MapResponse,
 		DNSConfig:       dns,
 		ControlTime:     &t,
 	}
+	res.L2DiscoveryRules = slices.Clone(s.L2DiscoveryRules) // __CYLONIX_ADD__
 
 	s.mu.Lock()
 	nodeMasqs := s.masquerades[node.Key]
