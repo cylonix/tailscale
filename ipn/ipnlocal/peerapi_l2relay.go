@@ -15,13 +15,13 @@ import (
 )
 
 func init() {
-	RegisterPeerAPIHandler("/v0/l2relay/hello", handleHello)
-	RegisterPeerAPIHandler("/v0/l2relay/leader", handleLeader)
-	RegisterPeerAPIHandler("/v0/l2relay/envelope", handleEnvelope)
-	RegisterPeerAPIHandler("/v0/l2relay/proxy/tcp", handleProxyTCP)
+	RegisterPeerAPIHandler("/v0/l2relay/hello", handleL2RelayHello)
+	RegisterPeerAPIHandler("/v0/l2relay/leader", handleL2RelayLeader)
+	RegisterPeerAPIHandler("/v0/l2relay/envelope", handleL2RelayEnvelope)
+	RegisterPeerAPIHandler("/v0/l2relay/proxy/tcp", handleL2RelayProxyTCP)
 }
 
-func handleHello(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
+func handleL2RelayHello(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -38,7 +38,7 @@ func handleHello(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleLeader(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
+func handleL2RelayLeader(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -58,7 +58,7 @@ func handleLeader(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleEnvelope(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
+func handleL2RelayEnvelope(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -82,7 +82,7 @@ func handleEnvelope(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleProxyTCP(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
+func handleL2RelayProxyTCP(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

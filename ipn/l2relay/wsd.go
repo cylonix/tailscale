@@ -117,10 +117,16 @@ func (m *l2RelayManager) injectIncomingWSDQueryWithPAT(src netip.AddrPort, env *
 		return false
 	}
 	defer c.Close()
-	m.noteInjectedPayload(l2ProtoWSD, env.Payload)
 	if _, err := c.WriteTo(env.Payload, ra); err != nil {
 		m.logf("[v1] l2relay: wsd pat inject write error local=%v dst=%v origin=%d/%s seq=%d err=%v", c.LocalAddr(), ra, env.OriginNodeID, env.OriginBootID, env.Seq, err)
 		return false
+	}
+	// Record (sig, local IP, local port) after the successful send so that
+	// the capture loop can suppress the bounce-back by exact address match.
+	if ua, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		if ap, ok := udpAddrPort(ua); ok {
+			m.noteInjectedPayload(l2ProtoWSD, env.Payload, ap)
+		}
 	}
 	querySig := relayRawSig(env.Payload)
 	m.limitedLogf("[v1] l2relay: wsd pat inject query local=%v dst=%v origin=%d/%s seq=%d query_key=%s query_sig=%s", c.LocalAddr(), ra, env.OriginNodeID, env.OriginBootID, env.Seq, env.WSDQueryKey, querySig)
@@ -236,6 +242,8 @@ func (m *l2RelayManager) forwardWSDPATReplyToOrigin(src netip.AddrPort, req *l2R
 	m.sendEnvelopeToPeer(dstIP, peer, env)
 }
 
+// injectToWSDPATDestination delivers a WSD response to the original querier
+// recorded under queryKey.
 func (m *l2RelayManager) injectToWSDPATDestination(queryKey string, payload []byte) (bool, []byte) {
 	lockedAt := m.lockRelayMu("injectToWSDPATDestination")
 	now := time.Now()
@@ -257,6 +265,16 @@ func (m *l2RelayManager) injectToWSDPATDestination(queryKey string, payload []by
 		return false, nil
 	}
 	m.unlockRelayMu("injectToWSDPATDestination", lockedAt)
+
+	// NOTE: Windows self-relay of WSD ProbeMatches does not work. The WSD
+	// service (FDResPub) has internal filtering that rejects responses
+	// regardless of delivery path: regular UDP (self-filter drops same-machine
+	// source), TUN injection (interface/source mismatch), and loopback
+	// (application-level rejection) have all been tried and fail.
+	// Cross-relay via a second node on the same LAN (e.g. Linux/Android)
+	// works because the response arrives from an external machine.
+	// Windows nodes require a peer relay on the local LAN segment.
+
 	c, err := m.listenWSDSourcePort()
 	if err != nil {
 		m.logf("[v1] l2relay: wsd pat destination 3702 bind failed query_key=%s dst=%v err=%v; falling back to ephemeral", queryKey, dst.querier, err)

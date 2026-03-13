@@ -13,6 +13,63 @@ discovery** across sites.
 
 SSDP, NetBIOS/WINS, and other broadcast discovery protocols are not relayed.
 
+### Relayed mDNS Service Types
+
+The relay only forwards traffic for a focused set of service types. Broad relay of
+all mDNS traffic is avoided to limit unnecessary cross-site exposure and to prevent
+privacy-sensitive services (e.g. media casting) from leaking across mesh peers.
+
+**Printing**
+
+| Service type | Description |
+|---|---|
+| `_ipp._tcp` | Internet Printing Protocol (AirPrint, most modern printers) |
+| `_ipps._tcp` | IPP over TLS |
+| `_printer._tcp` | Generic Bonjour printer advertisement |
+| `_universal._sub._ipp._tcp` | Universal print queue subtype |
+| `_pdl-datastream._tcp` | PDL raw printing, port 9100 (HP, Epson, Brother, etc.) |
+| `airprint` | AirPrint TXT-record token |
+
+**Scanning (multifunction printers)**
+
+| Service type | Description |
+|---|---|
+| `_scanner._tcp` | Bonjour scanner service |
+| `_uscan._tcp` | eSCL universal scanning (HP, Epson, Canon, Brother) |
+| `_uscans._tcp` | eSCL scanning over TLS |
+
+**NAS / Network Storage**
+
+| Service type | Description |
+|---|---|
+| `_smb._tcp` | SMB/Samba file sharing |
+| `_adisk._tcp` | Apple disk sharing |
+| `_afpovertcp._tcp` | Apple Filing Protocol (AFP) |
+| `_webdav._tcp` | WebDAV |
+| `_webdavs._tcp` | WebDAV over TLS |
+| `_nfs._tcp` | NFS |
+
+**Gaming (LAN game discovery)**
+
+| Protocol | Description |
+|---|---|
+| Minecraft `224.0.2.60:4445` | Minecraft Java Edition LAN server announcements |
+| `_nvstream._tcp` | NVIDIA GameStream / Moonlight client (mDNS) |
+| `_steam-remoteplay._tcp` | Steam Remote Play (mDNS) |
+
+> **Note:** Minecraft LAN discovery is announcement-only relay — the
+> announcement carries the server's original LAN IP address and is not
+> rewritten. The discovered server will only be connectable if a routed path
+> exists between the two LANs (e.g., subnet routing is enabled). This is
+> unlike printer and NAS discovery where source addresses are rewritten to
+> enable cross-LAN connectivity.
+
+**Not relayed by design:** Media casting services such as AirPlay
+(`_airplay._tcp`, `_raop._tcp`) and Google Cast (`_googlecast._tcp`) are
+intentionally excluded. Relaying these across mesh peers would expose media
+devices to unintended networks and carries privacy implications for shared or
+multi-tenant mesh configurations.
+
 > ⚠️ **Public Wi-Fi warning:** Disable the relay when connected to a public or
 > untrusted Wi-Fi network. With relay enabled, the device captures and forwards local
 > network discovery traffic to your mesh peers, which is inappropriate on a network
@@ -60,16 +117,25 @@ The diagram below shows the reference setup used in this guide.
                            │ [Subnet Router]    │   └─────────────────────┘
   ┌────────────────────┐   │  192.168.1.0/24    │
   │ Synology NAS       │   └────────────────────┘   ┌─────────────────────┐
-  │ 192.168.1.20       │                            │ iPhone              │
-  │                    │                            │ 192.168.2.x         │
+  │ 192.168.1.20       │                            │ Android TV          │
+  │                    │                            │ 192.168.2.30        │
   │ Cylonix SPK        │                            │                     │
   │ [L2 Service]       │                            │ Cylonix             │
-  │                    │                            │ [Relay]             │
-  │ Mesh name:         │                            │ (relay only,        │
-  │ ds124-24t.         │                            │  iOS sandboxed)     │
-  │ cy123456.          │                            └─────────────────────┘
-  │ cylonix.org        │
+  │                    │                            │ [Relay] [Inject]    │
+  │ Mesh name:         │                            │ (any 2nd Cylonix    │
+  │ ds124-24t.         │                            │  node works for     │
+  │ cy123456.          │                            │  Windows WSD relay) │
+  │ cylonix.org        │                            └─────────────────────┘
   └────────────────────┘
+                                                    ┌─────────────────────┐
+                                                    │ iPhone              │
+                                                    │ 192.168.2.x         │
+                                                    │                     │
+                                                    │ Cylonix             │
+                                                    │ [Relay]             │
+                                                    │ (relay only,        │
+                                                    │  iOS sandboxed)     │
+                                                    └─────────────────────┘
 ```
 
 ### Capability roles in this setup
@@ -80,6 +146,7 @@ The diagram below shows the reference setup used in this guide.
 | Linux PC        | ✔     | ✔      | —          | ✔             |
 | Synology NAS    | —     | —      | ✔          | —             |
 | Windows PC      | ✔     | ✔      | —          | —             |
+| Android TV      | ✔     | ✔      | —          | —             |
 | iPhone          | ✔     | —      | —          | —             |
 
 All capabilities can be set either from the **device app** (master toggle) or from
@@ -93,6 +160,18 @@ cannot send multicast.
 
 The Linux PC carries the full relay + inject + subnet router burden for LAN 1 because
 it is always on. Windows carries relay + inject for LAN 2 when it is online.
+
+> **Note — Windows WSD requires a second relay node on the same LAN:** The
+> Windows WSD service (FDResPub) has internal filtering that prevents a Windows
+> node from delivering WSD discovery responses to itself, regardless of the
+> delivery path used (regular UDP, loopback, or TUN injection). As a result,
+> **Windows cannot complete a WSD relay cycle on its own** — it cannot receive
+> the response that comes back from a remote LAN (e.g. the NAS on LAN 1). A
+> second Cylonix relay+inject node on the same LAN is required — another
+> Windows PC, the Android TV shown above, a Linux server, or any other
+> relay+inject-capable node. That peer captures the WSD probe from the physical
+> LAN, relays it to the remote injector, and delivers the response back to
+> Windows from its own LAN IP, which the WSD service accepts.
 
 > **Tip — Android TV as a relay node:** Android TV devices (e.g. NVIDIA Shield,
 > Google TV) are excellent always-on relay + inject + subnet router nodes. They
@@ -208,32 +287,40 @@ The NAS has the Cylonix SPK installed and has `has-l2-discoverable-service` enab
 Its mesh hostname (`ds124-24t.cy123456.cylonix.org`) is always reachable from any
 mesh peer regardless of subnet routing.
 
-Windows discovery uses both **mDNS** and **WSD**. The NAS will appear in Windows
-Explorer as a network computer and storage device. WSD discovery can take a few
-seconds longer than mDNS — if the NAS does not appear immediately, wait 10–15
-seconds before retrying.
+Windows uses **WSD** for network device discovery. The NAS will appear in Windows
+Explorer as a network computer and storage device. If the NAS does not appear
+immediately, wait 10–15 seconds before retrying.
 
 ```
-Windows (LAN 2)         Linux (LAN 1)           Synology NAS (LAN 1)
-     │                       │                          │
-     │─ mDNS / WSD query ───▶│  (Windows relays its     │
-     │  "_smb._tcp.local"    │   own query to peers)    │
-     │                       │─ inject (multicast) ────▶│
-     │                       │                          │ Cylonix rewrites hostname:
-     │                       │◀─ unicast response ──────│
-     │                       │  host: ds124-24t.        │ (was: ds124-24t.local)
-     │                       │        cy123456.         │
-     │                       │        cylonix.org       │
-     │◀─ relay response ─────│                          │
-     │  host: ds124-24t.cy123456.cylonix.org            │
-     │  addr: <mesh IP>      │                          │
-     │                       │                          │
-     │══ SMB / file access (direct over mesh) ═════════▶ NAS
+Windows (LAN 2)    Android TV (LAN 2)    Linux (LAN 1)      Synology NAS (LAN 1)
+     │                    │                    │                       │
+     │─ WSD probe ───────▶│                    │                       │
+     │  (multicast LAN 2) │                    │                       │
+     │                    │── relay over mesh ▶│                       │
+     │                    │                    │─ inject (multicast) ─▶│
+     │                    │                    │                       │ Cylonix rewrites
+     │                    │                    │◀─ unicast response ───│ hostname:
+     │                    │                    │  host: ds124-24t.     │ (was: ds124-24t
+     │                    │◀─ relay response ──│        cy123456.      │      .local)
+     │                    │                    │        cylonix.org    │
+     │◀─ WSD response ────│                    │                       │
+     │  (UDP, src=Android │                    │                       │
+     │   TV LAN IP)       │                    │                       │
+     │  host: ds124-24t.cy123456.cylonix.org   │                       │
+     │                    │                    │                       │
+     │══ SMB / file access (direct over mesh) ══════════════════════▶ NAS
 ```
+
+The Android TV (or any second Cylonix relay+inject node on LAN 2) is the key
+intermediary: it captures the WSD probe from the physical LAN, relays it to
+Linux, and delivers the response back to Windows from its own LAN IP. Windows
+accepts this because the source is an external machine. Without a peer on LAN 2,
+Windows cannot receive WSD responses for its own probes.
 
 **Requirements:**
+- Android TV (or any second Cylonix node on LAN 2): **Relay + Inject** enabled
 - Linux PC: **Relay + Inject** enabled (captures and injects on LAN 1)
-- Windows PC: **Relay** enabled (so it forwards its own query to LAN 1 peers)
+- Windows PC: **Relay** enabled
 - Synology NAS: **L2 Service** enabled (rewrites hostname in response)
 
 > No subnet router is needed for NAS access. Windows connects to
@@ -248,10 +335,10 @@ Windows (LAN 2)         Linux (LAN 1)           Synology NAS (LAN 1)
 For each LAN, pick **one always-on device** to act as the relay/inject node for that
 LAN. In our example:
 
-| LAN   | Relay + Inject node | Notes                                          |
-|-------|---------------------|------------------------------------------------|
-| LAN 1 | Linux PC            | Also enable subnet router for printer access   |
-| LAN 2 | Windows PC          | Can also be an Android TV or Linux server      |
+| LAN   | Relay + Inject node | Notes                                                                     |
+|-------|---------------------|---------------------------------------------------------------------------|
+| LAN 1 | Linux PC            | Also enable subnet router for printer access                              |
+| LAN 2 | Windows PC          | For WSD local discovery, also add any second Cylonix relay+inject node on this LAN |
 
 ### Step 2 — Enable Capabilities in the App
 
@@ -322,10 +409,10 @@ On the iPhone or Windows PC, open the system print dialog or file browser. The
 printer and NAS should appear as if they were on the local network. Allow 10–30
 seconds for the first discovery cycle to complete after enabling the relay.
 
-WSD-based discovery (Windows network shares, NAS in Explorer) may take a few extra
-seconds to populate. If the NAS does not appear immediately, wait 10–15 seconds
-before retrying from the client side (e.g. refreshing the Windows Explorer network
-view or reopening the print dialog).
+WSD discovery (Windows network shares, NAS in Explorer) may take a few seconds to
+populate. If the NAS does not appear immediately, wait 10–15 seconds before retrying
+from the client side (e.g. refreshing the Windows Explorer network view or reopening
+the print dialog).
 
 ---
 
@@ -361,6 +448,21 @@ client side.
 - Check the app logs for relay activity to confirm queries are being captured and
   forwarded.
 
+### Windows WSD discovery does not find remote devices (NAS, printers on other LANs)
+
+The Windows WSD service (FDResPub) has internal filtering that rejects
+responses delivered back to the same machine that issued the probe, regardless
+of the delivery path. This means Windows cannot complete a WSD relay cycle on
+its own: it sends the probe, the remote injector collects the response and
+sends it back, but Windows is unable to deliver that response to its own WSD
+socket. This is a Windows OS-level restriction with no user-space workaround.
+
+**Fix:** Add a second Cylonix node with **Relay + Inject** enabled to the same
+LAN as the Windows machine — another Windows PC, a Linux server, or an Android
+device all work. That peer captures the WSD probe from the physical LAN,
+relays it to the remote LAN, and delivers the response back to Windows from
+its own LAN IP — which the WSD service accepts as an external source.
+
 ### Discovery works intermittently
 
 mDNS queries are time-limited. If the relay node on LAN 2 is a laptop or phone that
@@ -379,5 +481,21 @@ device such as a desktop PC, Linux server, or Android TV box.
   relay per LAN.
 - **mDNS and WSD only.** SSDP (used by UPnP/DLNA), NetBIOS/WINS, and DNS-SD over
   unicast are not relayed.
+- **Focused service types only.** Only printer, scanner, NAS, and selected gaming
+  service types are relayed. Media casting (AirPlay, Chromecast) is intentionally
+  excluded to avoid cross-site privacy exposure.
+- **Windows WSD relay requires a second Cylonix node on the same LAN.**
+  The Windows WSD service has internal filtering that blocks self-delivered
+  responses regardless of the delivery mechanism, so Windows cannot complete
+  a WSD relay cycle on its own. Discovering remote WSD devices (e.g. NAS on
+  another LAN) requires a second Cylonix relay+inject node on the same LAN as
+  the Windows machine — another Windows PC, a Linux server, or an Android
+  device. That peer captures the probe from the physical LAN and delivers the
+  response back to Windows from an external LAN IP.
+- **Gaming discovery is LAN-announcement relay only.** Minecraft relay forwards
+  server announcements but does not rewrite addresses. Unlike printer/NAS
+  discovery, a discovered game server is only joinable if subnet routing connects
+  the two LANs. NVIDIA GameStream and Steam Remote Play use mDNS and are relayed
+  like other services.
 - **Disable on public Wi-Fi.** When connected to a public or shared network, turn off
   the relay to avoid capturing and forwarding local network traffic to your mesh.

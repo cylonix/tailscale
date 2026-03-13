@@ -31,9 +31,20 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 	"tailscale.com/envknob"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/packet"
+	"tailscale.com/net/tstun"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/ipproto"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
+	"tailscale.com/wgengine/filter"
+)
+
+var (
+	multicastMDNS      = netip.MustParseAddr("224.0.0.251")
+	multicastWSD       = netip.MustParseAddr("239.255.255.250")
+	multicastMinecraft = netip.MustParseAddr("224.0.2.60")
+	cgnatRange         = netip.MustParsePrefix("100.64.0.0/10")
 )
 
 const (
@@ -162,7 +173,9 @@ var (
 )
 
 func (m *l2RelayManager) logf(format string, args ...any) {
-	if debugL2RelayVerbose() {
+	if debugL2RelayVerbose() || runtime.GOOS == "windows" {
+		format = strings.TrimPrefix(format, "[v1] ")
+		format = strings.TrimPrefix(format, "[v2] ")
 		log.Printf(format, args...)
 		return
 	}
@@ -170,7 +183,9 @@ func (m *l2RelayManager) logf(format string, args ...any) {
 }
 
 func (m *l2RelayManager) limitedLogf(format string, args ...any) {
-	if debugL2RelayVerbose() {
+	if debugL2RelayVerbose() || runtime.GOOS == "windows" {
+		format = strings.TrimPrefix(format, "[v1] ")
+		format = strings.TrimPrefix(format, "[v2] ")
 		log.Printf(format, args...)
 		return
 	}
@@ -196,7 +211,11 @@ func (m *l2RelayManager) unlockRelayMu(caller string, lockedAt time.Time) {
 
 var (
 	debugL2RelayEnabledOpt = envknob.RegisterOptBool("TS_DEBUG_L2RELAY_ENABLED")
-	debugL2RelayVerbose    = envknob.RegisterBool("TS_DEBUG_L2RELAY_VERBOSE")
+
+	// Use lookup per call for now during beta to allow turning on and off
+	// verbose logging. If this becomes a performance concern, we can switch t
+	// either check this value at each hello tick or only during initialization.
+	debugL2RelayVerbose = envknob.RegisterBoolWithLookUpPerCall("TS_DEBUG_L2RELAY_VERBOSE")
 )
 
 func debugL2RelayEnabled() bool {
@@ -217,7 +236,8 @@ func newL2RelayManager(b Backend) *l2RelayManager {
 	if nm != nil && nm.SelfNode.Valid() {
 		selfNodeID = nm.SelfNode.ID()
 		selfCanRelayQuery = nm.SelfNode.HasCap(tailcfg.NodeCanRelayL2Discovery)
-		selfCanInjectQuery = nm.SelfNode.HasCap(tailcfg.NodeCanInjectL2Discovery)
+		selfCanInjectQuery = nm.SelfNode.HasCap(tailcfg.NodeCanInjectL2Discovery) ||
+			nm.SelfNode.HasCap(tailcfg.NodeHasL2DiscoverableService)
 	}
 	m := &l2RelayManager{
 		b:                  b,
@@ -324,7 +344,8 @@ func (m *l2RelayManager) setNetMap(nm *netmap.NetworkMap) {
 	if nm != nil && nm.SelfNode.Valid() {
 		m.selfNodeID = nm.SelfNode.ID()
 		m.selfCanRelayQuery = nm.SelfNode.HasCap(tailcfg.NodeCanRelayL2Discovery)
-		m.selfCanInjectQuery = nm.SelfNode.HasCap(tailcfg.NodeCanInjectL2Discovery)
+		m.selfCanInjectQuery = nm.SelfNode.HasCap(tailcfg.NodeCanInjectL2Discovery) ||
+			nm.SelfNode.HasCap(tailcfg.NodeHasL2DiscoverableService)
 	} else {
 		m.selfNodeID = 0
 		m.selfCanRelayQuery = false
@@ -471,6 +492,7 @@ func (m *l2RelayManager) startCaptureLoops(ctx context.Context) {
 	go m.startIPv4MulticastCapture(ctx, l2ProtoMDNS)
 	//go m.startIPv4MulticastCapture(ctx, l2ProtoSSDP)
 	go m.startIPv4MulticastCapture(ctx, l2ProtoWSD)
+	go m.startIPv4MulticastCapture(ctx, l2ProtoMinecraft)
 	//go m.captureNetBIOSLoop(ctx, 137)
 	//go m.captureNetBIOSLoop(ctx, 138)
 	//go m.captureMulticastLoopV6(ctx, l2ProtoMDNS)
@@ -479,45 +501,75 @@ func (m *l2RelayManager) startCaptureLoops(ctx context.Context) {
 }
 
 func (m *l2RelayManager) startIPv4MulticastCapture(ctx context.Context, proto l2RelayProto) {
+	m.captureMulticastLoop(ctx, proto)
+}
+
+// tunOutboundCaptureFunc returns a tstun.FilterFunc suitable for use as
+// tstun.Wrapper.PreFilterPacketOutboundCapture, or nil on platforms where it
+// is not needed.
+//
+// On Windows, locally-sourced multicast packets are routed through the tunnel
+// interface and dropped by the main filter before the OS can deliver them to
+// the multicast UDP sockets that captureMulticastLoopOnInterface uses. This
+// hook intercepts those packets before the filter runs so the relay can still
+// observe and forward them. On all other platforms the OS multicast loopback
+// delivers the packets to the socket normally, so no hook is needed.
+func (m *l2RelayManager) tunOutboundCaptureFunc() tstun.FilterFunc {
 	if runtime.GOOS != "windows" {
-		m.captureMulticastLoop(ctx, proto)
+		return nil
+	}
+	return func(p *packet.Parsed, _ *tstun.Wrapper) filter.Response {
+		m.captureFromParsedPacket(p)
+		return filter.Accept
+	}
+}
+
+// captureFromParsedPacket handles a packet seen via the tun outbound capture
+// hook. It replicates the logic of captureMulticastLoopOnInterface for packets
+// that arrive through the TUN device rather than an OS multicast socket.
+func (m *l2RelayManager) captureFromParsedPacket(p *packet.Parsed) {
+	if p.IPProto != ipproto.UDP {
 		return
 	}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		m.logf("l2relay: capture interface enumeration %s failed: %v", proto, err)
-		m.captureMulticastLoop(ctx, proto)
+	var proto l2RelayProto
+	switch {
+	case p.Dst.Addr() == multicastMDNS && p.Dst.Port() == 5353:
+		proto = l2ProtoMDNS
+	case p.Dst.Addr() == multicastWSD && p.Dst.Port() == 3702:
+		proto = l2ProtoWSD
+	case p.Dst.Addr() == multicastMinecraft && p.Dst.Port() == 4445:
+		proto = l2ProtoMinecraft
+	default:
 		return
 	}
-	started := false
-	for i := range ifaces {
-		m.logf("checking interface for multicast capture: %v", ifaces[i].Name)
-		ifi := ifaces[i]
-		if ifi.Flags&net.FlagUp == 0 {
-			continue
-		}
-		if addrs, err := ifi.Addrs(); err != nil || len(addrs) == 0 {
-			continue
-		}
-		// For Windows, multicast traffic does not loop back from the physical
-		// interface if it is sourced from the same device. We therefore need
-		// to listen to multicast on the tunnel interfaces instead for such
-		// packets. System will inject multicast query on the tunnel interface
-		// and then get dropped by the tunnel filter built-in code.
-		isWindowsTailscaleInterface := runtime.GOOS == "windows" &&
-			(ifi.Name == "Tailscale" || ifi.Name == "Cylonix")
-		if !isWindowsTailscaleInterface {
-			if ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
-				continue
-			}
-		}
-		started = true
-		go m.captureMulticastLoopOnInterface(ctx, proto, &ifi)
+	payload := p.Payload()
+	if len(payload) == 0 {
+		return
 	}
-	if !started {
-		m.logf("[v1] l2relay: capture no suitable windows interfaces for %s; falling back to default multicast join", proto)
-		m.captureMulticastLoop(ctx, proto)
+	src := &net.UDPAddr{
+		IP:   p.Src.Addr().AsSlice(),
+		Port: int(p.Src.Port()),
 	}
+	// mDNS loop guard: injected mDNS packets use an ephemeral source port,
+	// not 5353, so this check is sufficient to suppress bounce-backs.
+	if proto == l2ProtoMDNS && src.Port != 5353 {
+		return
+	}
+	// Copy payload — p.Payload() is a slice into the packet buffer which may
+	// be reused after this call returns.
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+	// Loop guard: check (sig, IP, port) against recently injected entries.
+	// Covers WSD (no reliable port-based guard) and mDNS (belt-and-suspenders
+	// for the case where injection bound port 5353 via SO_REUSEADDR).
+	if proto == l2ProtoMDNS || proto == l2ProtoWSD || proto == l2ProtoMinecraft {
+		if m.isRecentlyInjected(proto, buf, p.Src, 2*time.Second) {
+			m.limitedLogf("l2relay: tun capture %s bounce-back suppressed src=%v sig=%s", proto, p.Src, relayRawSig(buf))
+			return
+		}
+	}
+	queryKey := m.observeLocalDiscoverySource(proto, src, buf)
+	m.forwardCaptured(proto, buf, queryKey, src)
 }
 
 func (m *l2RelayManager) computeSegmentLocked(nm *netmap.NetworkMap) (segmentID string, segmentStrong bool, rank uint64) {
@@ -566,6 +618,9 @@ func (m *l2RelayManager) captureMulticastLoopOnInterface(ctx context.Context, pr
 		group, port = "239.255.255.250", 1900
 	case l2ProtoWSD:
 		group, port = "239.255.255.250", 3702
+	case l2ProtoMinecraft:
+		// Minecraft Java Edition LAN discovery: server broadcasts to 224.0.2.60:4445.
+		group, port = "224.0.2.60", 4445
 	default:
 		return
 	}
@@ -604,20 +659,26 @@ func (m *l2RelayManager) captureMulticastLoopOnInterface(ctx context.Context, pr
 			m.logf("l2relay: capture read %s terminating: %v", proto, err)
 			return
 		}
-		// Loop guard:
-		// - mDNS requests/responses are expected to use 5353; injected packets with
-		//   ephemeral ports should not be re-relayed.
-		// - WSD probes commonly originate from ephemeral source ports, so we must
-		//   not require src.Port == 3702 there.
+		// Loop guards:
+		// - mDNS: injected packets use an ephemeral source port, not 5353, so
+		//   the port check here is sufficient to suppress bounce-backs.
+		// - WSD/Minecraft: both real queries and injected probes use ephemeral
+		//   ports, so we use isRecentlyInjected keyed on (sig, IP, port) to
+		//   suppress only packets whose exact local address was used for injection.
 		if n <= 0 {
 			continue
 		}
 		if proto == l2ProtoMDNS && src.Port != port {
+			m.limitedLogf("l2relay: capture invalid mdns packet src.Port %v != port %v", src.Port, port)
 			continue
 		}
-		if !m.allowCapturedSourceIP(src.IP) {
-			m.limitedLogf("l2relay: capture src IP %s not allowed for proto %s; skipping src=%v", src.IP, proto, src)
-			continue
+		if proto == l2ProtoMDNS || proto == l2ProtoWSD || proto == l2ProtoMinecraft {
+			if capturedSrc, ok := udpAddrPort(src); ok {
+				if m.isRecentlyInjected(proto, buf[:n], capturedSrc, 2*time.Second) {
+					m.limitedLogf("l2relay: capture %s bounce-back suppressed src=%v sig=%s", proto, src, relayRawSig(buf[:n]))
+					continue
+				}
+			}
 		}
 		mdnsQueryKey := m.observeLocalDiscoverySource(proto, src, buf[:n])
 		m.forwardCaptured(proto, buf[:n], mdnsQueryKey, src)
@@ -842,7 +903,7 @@ func (m *l2RelayManager) forwardCaptured(proto l2RelayProto, payload []byte, que
 		return
 	}
 	if !m.canForwardCaptured() {
-		m.limitedLogf("l2relay: drop captured proto=%s not leader", proto)
+		m.limitedLogf("l2relay: drop captured proto=%s not leader or not enabled to relay query", proto)
 		return
 	}
 	nm := m.b.NetMap()
@@ -890,7 +951,12 @@ func (m *l2RelayManager) forwardCaptured(proto l2RelayProto, payload []byte, que
 			return
 		}
 	case l2ProtoMinecraft:
-		// Minecraft LAN discovery payload is relayed as-is.
+		// Minecraft LAN discovery payload is relayed as-is. Note: the
+		// announcement carries the server's LAN IP, so the discovered server
+		// is only reachable if the client is on the same LAN segment or a
+		// routed path exists. Unlike printer/NAS discovery, no source-address
+		// rewriting is performed; Minecraft relay is LAN-local announcement
+		// forwarding only, not a fully proxied service.
 	case l2ProtoWSD:
 		summary, interested := summarizeDiscoveryPayload(proto, payload)
 		if (!isWSDQueryShaped(payload) && !isWSDAnnounce(payload)) || !interested {
@@ -1183,13 +1249,11 @@ func (m *l2RelayManager) handleIncomingEnvelope(src netip.AddrPort, selfAddr net
 			m.logf("[v2] l2relay: ssdp packet dropped from=%v sig=%s reason=not_interesting", src, payloadSig)
 			return nil
 		}
-		m.noteInjectedPayload(env.Proto, env.Payload)
 		m.injectToLocalDiscovery(env.Proto, env.Payload)
 		m.logf("[v2] l2relay: ssdp injected from=%v sig=%s", src, payloadSig)
 		return nil
 	}
 	if env.Proto == l2ProtoMinecraft {
-		m.noteInjectedPayload(env.Proto, env.Payload)
 		m.injectToLocalDiscovery(env.Proto, env.Payload)
 		m.logf("[v2] l2relay: minecraft injected from=%v sig=%s", src, payloadSig)
 		return nil
@@ -1219,7 +1283,6 @@ func (m *l2RelayManager) handleIncomingEnvelope(src netip.AddrPort, selfAddr net
 			patDelivered := false
 			if env.MDNSQueryKey != "" {
 				m.logf("l2relay: mdns pat destination receive src=%v query_key=%s query_sig=%s payload_sig=%s", src, env.MDNSQueryKey, env.MDNSQuerySig, relayRawSig(env.Payload))
-				m.noteInjectedPayload(env.Proto, env.Payload)
 				if delivered, newPayload := m.injectToMDNSPATDestination(env.MDNSQueryKey, env.Payload); delivered {
 					patDelivered = true
 					env.Payload = newPayload
@@ -1296,7 +1359,6 @@ func (m *l2RelayManager) handleIncomingEnvelope(src netip.AddrPort, selfAddr net
 				m.logf("[v1] l2relay: wsd announce packet from=%v sig=%s dropped reason=not_interesting", src, payloadSig)
 				return nil
 			}
-			m.noteInjectedPayload(l2ProtoWSD, env.Payload)
 			m.injectToLocalDiscovery(l2ProtoWSD, env.Payload)
 			m.logf("[v1] l2relay: wsd announce injected from=%v sig=%s", src, payloadSig)
 			return nil
@@ -1343,11 +1405,17 @@ func (m *l2RelayManager) isResponseEnvelope(env *l2RelayEnvelope) bool {
 	}
 }
 
-func (m *l2RelayManager) noteInjectedPayload(proto l2RelayProto, payload []byte) {
+// noteInjectedPayload records a payload that was just injected onto the local
+// network so that captureMulticastLoopOnInterface can suppress the bounce-back.
+// localAddr is the local UDP address used for the inject send (IP + ephemeral
+// port). Pass netip.AddrPort{} for protocols whose loop guard does not require
+// source-address precision (e.g. mDNS uses the port-5353 check; NetBIOS uses
+// payload-only dedup).
+func (m *l2RelayManager) noteInjectedPayload(proto l2RelayProto, payload []byte, localAddr netip.AddrPort) {
 	if len(payload) == 0 {
 		return
 	}
-	k := fmt.Sprintf("%s|%s", proto, relayRawSig(payload))
+	k := fmt.Sprintf("%s|%s|%s", proto, relayRawSig(payload), localAddr)
 	now := time.Now()
 	lockedAt := m.lockRelayMu("noteInjectedPayload")
 	defer m.unlockRelayMu("noteInjectedPayload", lockedAt)
@@ -1359,11 +1427,16 @@ func (m *l2RelayManager) noteInjectedPayload(proto l2RelayProto, payload []byte)
 	m.recentInjected[k] = now
 }
 
-func (m *l2RelayManager) isRecentlyInjected(proto l2RelayProto, payload []byte, maxAge time.Duration) bool {
+// isRecentlyInjected returns true if the same payload was recently injected
+// from capturedSrc (IP + port). For WSD this provides precise loop detection:
+// only the exact (sig, IP, port) triple used during injection is suppressed,
+// so Relay-B's own real queries (different ephemeral port) still pass through.
+// Pass netip.AddrPort{} for protocols that use payload-only dedup.
+func (m *l2RelayManager) isRecentlyInjected(proto l2RelayProto, payload []byte, capturedSrc netip.AddrPort, maxAge time.Duration) bool {
 	if len(payload) == 0 {
 		return false
 	}
-	k := fmt.Sprintf("%s|%s", proto, relayRawSig(payload))
+	k := fmt.Sprintf("%s|%s|%s", proto, relayRawSig(payload), capturedSrc)
 	now := time.Now()
 	lockedAt := m.lockRelayMu("isRecentlyInjected")
 	defer m.unlockRelayMu("isRecentlyInjected", lockedAt)
@@ -1418,13 +1491,12 @@ func (m *l2RelayManager) selfLANIPv4ForRelay() (netip.Addr, bool) {
 	if ifName == "" {
 		return netip.Addr{}, false
 	}
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
 	for _, pfx := range st.InterfaceIPs[ifName] {
 		ip := pfx.Addr().Unmap()
 		if !ip.IsValid() || !ip.Is4() {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || cgnat.Contains(ip) {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || cgnatRange.Contains(ip) {
 			continue
 		}
 		return ip, true
@@ -1451,6 +1523,13 @@ func (m *l2RelayManager) injectToLocalDiscovery(proto l2RelayProto, payload []by
 		m.injectToLocalMulticast(payload, "udp4", "239.255.255.250:1900", proto, payloadSig)
 	case l2ProtoWSD:
 		m.injectToLocalMulticast(payload, "udp4", "239.255.255.250:3702", proto, payloadSig)
+	case l2ProtoMinecraft:
+		// Minecraft Java Edition LAN discovery: inject to 224.0.2.60:4445.
+		// The announcement carries the remote server's original LAN IP; no
+		// address rewriting is done, so the discovered server is only
+		// reachable if a routed path exists (e.g., the two LANs share a
+		// subnet or the user has subnet routing enabled).
+		m.injectToLocalMulticast(payload, "udp4", "224.0.2.60:4445", proto, payloadSig)
 	default:
 		m.logf("l2relay: unknown proto for injection: %q", proto)
 	}
@@ -1460,7 +1539,6 @@ func (m *l2RelayManager) injectIncomingMDNSQueryWithPAT(src netip.AddrPort, env 
 	if env == nil || env.OriginNodeID == 0 || len(env.Payload) == 0 {
 		return false
 	}
-	m.noteInjectedPayload(l2ProtoMDNS, env.Payload)
 	v4ok := m.injectIncomingMDNSQueryWithPATNetwork("udp4", "224.0.0.251:5353", src, env)
 	v6ok := m.injectIncomingMDNSQueryWithPATNetwork("udp6", "[ff02::fb]:5353", src, env)
 	return v4ok || v6ok
@@ -1491,6 +1569,11 @@ func (m *l2RelayManager) injectIncomingMDNSQueryWithPATNetwork(network, dst stri
 		m.logf("l2relay: mdns pat inject write error network=%s dst=%s err=%v", network, dst, err)
 		lc.Close()
 		return false
+	}
+	if ua, ok := lc.LocalAddr().(*net.UDPAddr); ok {
+		if ap, ok := udpAddrPort(ua); ok {
+			m.noteInjectedPayload(l2ProtoMDNS, wirePayload, ap)
+		}
 	}
 	m.logf("l2relay: mdns pat inject query network=%s local=%v dst=%s origin=%d/%s seq=%d query_sig=%s", network, lc.LocalAddr(), dst, env.OriginNodeID, env.OriginBootID, env.Seq, relayRawSig(wirePayload))
 	reqEnv := *env
@@ -1749,17 +1832,27 @@ func isMDNSResponse(payload []byte) bool {
 }
 
 var relayInterestedMDNSTokens = []string{
+	// Printing (AirPrint / IPP / raw PDL)
 	"_ipp._tcp",
 	"_ipps._tcp",
 	"_printer._tcp",
 	"_universal._sub._ipp._tcp",
+	"_pdl-datastream._tcp",
 	"airprint",
+	// Scanning (eSCL / Bonjour scanner — multifunction printers)
+	"_scanner._tcp",
+	"_uscan._tcp",
+	"_uscans._tcp",
+	// NAS / network storage
 	"_smb._tcp",
 	"_adisk._tcp",
 	"_afpovertcp._tcp",
 	"_webdav._tcp",
 	"_webdavs._tcp",
 	"_nfs._tcp",
+	// Gaming (LAN game discovery)
+	"_nvstream._tcp",
+	"_steam-remoteplay._tcp",
 }
 
 var relaySMBMDNSTokens = []string{
@@ -2579,6 +2672,18 @@ func (m *l2RelayManager) injectToLocalMulticast(payload []byte, network, dst str
 		m.logf("l2relay: local inject write error sig=%s network=%s dst=%s err=%v", sig, network, dst, err)
 		return
 	}
+	// Record (sig, local IP, local port) for mDNS and WSD so the capture loop
+	// can suppress bounce-backs by exact address match.
+	// mDNS uses this as a belt-and-suspenders guard: listenMDNSSourcePort
+	// binds port 5353 with SO_REUSEADDR, so injection may succeed with
+	// src port 5353 — bypassing the port-5353 capture filter.
+	if proto == l2ProtoMDNS || proto == l2ProtoWSD || proto == l2ProtoMinecraft {
+		if ua, ok := c.LocalAddr().(*net.UDPAddr); ok {
+			if ap, ok := udpAddrPort(ua); ok {
+				m.noteInjectedPayload(proto, payload, ap)
+			}
+		}
+	}
 	m.logf("l2relay: injected local proto=%s sig=%s network=%s local=%v dst=%s bytes=%d note=\"OS host stack may still filter multicast delivery\"", proto, sig, network, c.LocalAddr(), dst, len(payload))
 }
 
@@ -2946,7 +3051,13 @@ func (m *l2RelayManager) maybeSendHelloToPeers(ctx context.Context) {
 		if base == "" {
 			continue
 		}
-		m.sendHello(ctx, base, hello)
+		// Each peer gets its own timeout derived from the cancellable root context,
+		// not from the shared parent tick context whose budget is eaten sequentially.
+		go func(base string) {
+			peerCtx, cancel := context.WithTimeout(ctx, l2RelayPeerSendTimeout)
+			defer cancel()
+			m.sendHello(peerCtx, base, hello)
+		}(base)
 		sent++
 	}
 	m.limitedLogf("[v1] l2relay: hello tick segment=%q rank=%d sent=%d online_peers=%d", hello.SegmentID, hello.Rank, sent, len(peers))
@@ -3000,13 +3111,18 @@ func (m *l2RelayManager) maybeSendLeaderToPeers(ctx context.Context, nm *netmap.
 		if err := json.NewEncoder(&body).Encode(&leader); err != nil {
 			continue
 		}
-		res, err := m.postPeerAPIJSON(ctx, base+"/v0/l2relay/leader", body.Bytes())
-		if err != nil {
-			m.logf("l2relay: leader post failed base=%q err=%v", base, err)
-			continue
-		}
+		payload := body.Bytes()
+		go func(base string, payload []byte) {
+			peerCtx, cancel := context.WithTimeout(ctx, l2RelayPeerSendTimeout)
+			defer cancel()
+			res, err := m.postPeerAPIJSON(peerCtx, base+"/v0/l2relay/leader", payload)
+			if err != nil {
+				m.logf("l2relay: leader post failed base=%q err=%v", base, err)
+				return
+			}
+			m.limitedLogf("[v2] l2relay: leader post ok base=%q status=%s leader=%d segment=%q", base, res.Status, leader.LeaderID, leader.SegmentID)
+		}(base, payload)
 		sent++
-		m.limitedLogf("[v2] l2relay: leader post ok base=%q status=%s leader=%d segment=%q", base, res.Status, leader.LeaderID, leader.SegmentID)
 	}
 	m.limitedLogf("[v1] l2relay: leader announce sent=%d online_peers=%d leader=%d segment=%q", sent, len(peers), leader.LeaderID, leader.SegmentID)
 }

@@ -599,6 +599,13 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 		b.goTracker.Go(b.l2RelayLoop)
 	}
 
+	// CYLONIX_ADD: install the l2relay outbound capture hook on the tun
+	// wrapper so locally-originated multicast (mDNS, NetBIOS, WSD) is visible
+	// to the relay before the main filter would drop it.
+	if tunWrap, ok := b.sys.Tun.GetOK(); ok && b.l2Relay != nil {
+		tunWrap.PreFilterPacketOutboundCapture = b.l2Relay.TunOutboundCaptureFunc()
+	}
+
 	// Call our linkChange code once with the current state.
 	// Following changes are triggered via the eventbus.
 	cd, err := netmon.NewChangeDelta(nil, b.interfaceState, false, false)
@@ -4900,9 +4907,10 @@ func (b *LocalBackend) l2RelayLoop() {
 			return
 		case <-t.C:
 			if b.l2Relay != nil {
-				ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
-				b.l2Relay.MaybeSendHelloToPeers(ctx)
-				cancel()
+				// Pass b.ctx directly; each peer send goroutine inside
+				// MaybeSendHelloToPeers carries its own l2RelayPeerSendTimeout
+				// deadline so they are not bottlenecked by a shared outer timer.
+				b.l2Relay.MaybeSendHelloToPeers(b.ctx)
 			}
 		}
 	}
