@@ -553,6 +553,15 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 
 	if tunWrap, ok := b.sys.Tun.GetOK(); ok {
 		tunWrap.PeerAPIPort = b.GetPeerAPIPort
+		// __BEGIN_CYLONIX_ADD__
+		if b.l2Relay != nil {
+			// Intercept locally-sourced multicast packets before the main filter
+			// drops them. On Windows the OS does not loop multicast back to the
+			// physical-interface socket, so this hook is the only way l2relay
+			// can observe packets that are routed through the tunnel interface.
+			tunWrap.PreFilterPacketOutboundCapture = b.l2Relay.TunOutboundCaptureFunc()
+		}
+		// __END_CYLONIX_ADD__
 	} else {
 		b.logf("[unexpected] failed to wire up PeerAPI port for engine %T", e)
 	}
@@ -4377,9 +4386,10 @@ func (b *LocalBackend) l2RelayLoop() {
 			return
 		case <-t.C:
 			if b.l2Relay != nil {
-				ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
-				b.l2Relay.MaybeSendHelloToPeers(ctx)
-				cancel()
+				// Pass b.ctx directly; each peer send goroutine inside
+				// MaybeSendHelloToPeers carries its own l2RelayPeerSendTimeout
+				// deadline so they are not bottlenecked by a shared outer timer.
+				b.l2Relay.MaybeSendHelloToPeers(b.ctx)
 			}
 		}
 	}

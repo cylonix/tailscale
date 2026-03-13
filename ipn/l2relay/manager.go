@@ -12,6 +12,7 @@ import (
 
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/tsdial"
+	"tailscale.com/net/tstun"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 	"tailscale.com/types/nettype"
@@ -191,6 +192,24 @@ func (m *Manager) HandleIncomingEnvelope(src netip.AddrPort, selfAddr netip.Addr
 	return handleEnvelope(m.m, src, selfAddr, raw)
 }
 
+// TunOutboundCaptureFunc returns a tstun.FilterFunc to install as
+// tstun.Wrapper.PreFilterPacketOutboundCapture. It intercepts locally-sourced
+// multicast packets (mDNS, WSD) before the main filter can drop them, which
+// is necessary on Windows where the OS does not loop multicast back to the
+// physical-interface socket when the packet is routed through the tunnel.
+func (m *Manager) TunOutboundCaptureFunc() tstun.FilterFunc {
+	if m == nil || m.m == nil {
+		return nil
+	}
+	return m.m.tunOutboundCaptureFunc()
+}
+
+// SetInjectInboundUDP sets a callback that injects a raw IPv4/UDP packet as
+// an inbound packet on the TUN device. This is used on Windows to deliver
+// WSD/mDNS responses to queries that were captured via the TUN outbound hook
+// (where the querier source IP is the Tailscale CGNAT address).
+// fn should call tstun.Wrapper.InjectInboundCopy with a packet built from
+// src, dst, and payload.
 func (m *Manager) ProxyTCP(from tailcfg.NodeView, target string, fromAddr, selfAddr netip.Addr, w http.ResponseWriter) error {
 	if m == nil || m.m == nil {
 		return errors.New("l2relay manager not initialized")

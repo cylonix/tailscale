@@ -21,7 +21,17 @@ import (
 
 const l2RelayWSDProxyPort uint16 = 35357
 
-var debugL2RelayWSDHTTPProxyRewrite = envknob.RegisterBool("TS_DEBUG_L2RELAY_WSD_HTTP_PROXY_REWRITE")
+var debugL2RelayWSDHTTPProxyRewriteOpt = envknob.RegisterOptBool("TS_DEBUG_L2RELAY_WSD_HTTP_PROXY_REWRITE")
+
+func debugL2RelayWSDHTTPProxyRewrite() bool {
+	if v, ok := debugL2RelayWSDHTTPProxyRewriteOpt().Get(); ok {
+		return v
+	}
+	// Default to true so that NAS showing from a Node installed with Cylonix can
+	// be properly identified with full domain name. Use the above option
+	// to disable the rewrite if prefer to the original hostname.
+	return true
+}
 
 func (m *l2RelayManager) tcpHandlerForFlow(src, dst netip.AddrPort) (handler func(net.Conn) error, intercept bool) {
 	if !debugL2RelayWSDHTTPProxyRewrite() || dst.Port() != l2RelayWSDProxyPort {

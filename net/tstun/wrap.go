@@ -221,6 +221,15 @@ type Wrapper struct {
 	// packets which it handles internally. If both this and PreFilterFromTunToNetstack
 	// filter functions are non-nil, this filter runs second.
 	PreFilterPacketOutboundToWireGuardEngineIntercept FilterFunc
+	// __BEGIN_CYLONIX_ADD__
+	// PreFilterPacketOutboundCapture is an optional capture-only hook that runs
+	// before the main outbound filter. It is called for every outbound packet that
+	// was not already consumed by the engine or netstack intercept hooks. The
+	// return value is ignored — the hook must not drop packets; it exists solely
+	// to allow components such as the L2 relay to observe packets before the main
+	// filter discards them (e.g. multicast destinations).
+	PreFilterPacketOutboundCapture FilterFunc
+	// __END_CYLONIX_ADD__
 	// PostFilterPacketOutboundToWireGuard is the outbound filter function that runs after the main filter.
 	PostFilterPacketOutboundToWireGuard FilterFunc
 
@@ -915,6 +924,12 @@ func (t *Wrapper) filterPacketOutboundToWireGuard(p *packet.Parsed, pc *peerConf
 			return res, gro
 		}
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	if t.PreFilterPacketOutboundCapture != nil {
+		t.PreFilterPacketOutboundCapture(p, t) // capture-only; return value intentionally ignored
+	}
+	// __END_CYLONIX_ADD__
 
 	// If the outbound packet is to a jailed peer, use our jailed peer
 	// packet filter.

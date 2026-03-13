@@ -220,12 +220,11 @@ func (m *l2RelayManager) captureNetBIOSLoop(ctx context.Context, port int) {
 		if ua.Port != port {
 			continue
 		}
-		if !m.allowCapturedSourceIP(ua.IP) {
-			continue
-		}
 		raw := append([]byte(nil), buf[:n]...)
-		if m.isRecentlyInjected(l2ProtoNetBIOS, raw, 1200*time.Millisecond) {
-			continue
+		if capturedSrc, ok := udpAddrPort(ua); ok {
+			if m.isRecentlyInjected(l2ProtoNetBIOS, raw, capturedSrc, 1200*time.Millisecond) {
+				continue
+			}
 		}
 		queryKey := m.observeLocalDiscoverySource(l2ProtoNetBIOS, ua, raw)
 		m.forwardCaptured(l2ProtoNetBIOS, raw, queryKey, ua)
@@ -301,11 +300,15 @@ func (m *l2RelayManager) injectIncomingNetBIOSQueryWithPAT(src netip.AddrPort, e
 		fallbackEphemeral = true
 	}
 	defer c.Close()
-	m.noteInjectedPayload(l2ProtoNetBIOS, env.Payload)
 	dst := &net.UDPAddr{IP: m.localIPv4BroadcastAddr(), Port: int(env.NetBIOSPort)}
 	if _, err := c.WriteTo(env.Payload, dst); err != nil {
 		m.logf("l2relay: netbios pat inject write error local=%v dst=%v origin=%d/%s seq=%d err=%v", c.LocalAddr(), dst, env.OriginNodeID, env.OriginBootID, env.Seq, err)
 		return false
+	}
+	if ua, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		if ap, ok := udpAddrPort(ua); ok {
+			m.noteInjectedPayload(l2ProtoNetBIOS, env.Payload, ap)
+		}
 	}
 	m.logf("l2relay: netbios pat inject query local=%v dst=%v origin=%d/%s seq=%d query_key=%s query_sig=%s fallback_ephemeral=%v", c.LocalAddr(), dst, env.OriginNodeID, env.OriginBootID, env.Seq, env.NetBIOSQueryKey, relayRawSig(env.Payload), fallbackEphemeral)
 	m.readNetBIOSPATReplies(c, src, env)
@@ -458,7 +461,6 @@ func (m *l2RelayManager) injectToLocalNetBIOSBroadcast(port uint16, payload []by
 	if len(payload) == 0 || port == 0 {
 		return
 	}
-	m.noteInjectedPayload(l2ProtoNetBIOS, payload)
 	c, err := net.ListenPacket("udp4", "")
 	if err != nil {
 		m.logf("[v1] l2relay: netbios local inject listen error port=%d err=%v", port, err)
@@ -469,6 +471,11 @@ func (m *l2RelayManager) injectToLocalNetBIOSBroadcast(port uint16, payload []by
 	if _, err := c.WriteTo(payload, dst); err != nil {
 		m.logf("[v1] l2relay: netbios local inject write error port=%d local=%v dst=%v err=%v", port, c.LocalAddr(), dst, err)
 		return
+	}
+	if ua, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		if ap, ok := udpAddrPort(ua); ok {
+			m.noteInjectedPayload(l2ProtoNetBIOS, payload, ap)
+		}
 	}
 	m.limitedLogf("[v1] l2relay: netbios local inject port=%d local=%v dst=%v bytes=%d payload_sig=%s", port, c.LocalAddr(), dst, len(payload), relayRawSig(payload))
 }
