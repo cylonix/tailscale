@@ -57,12 +57,24 @@ privacy-sensitive services (e.g. media casting) from leaking across mesh peers.
 | `_nvstream._tcp` | NVIDIA GameStream / Moonlight client (mDNS) |
 | `_steam-remoteplay._tcp` | Steam Remote Play (mDNS) |
 
-> **Note:** Minecraft LAN discovery is announcement-only relay — the
-> announcement carries the server's original LAN IP address and is not
-> rewritten. The discovered server will only be connectable if a routed path
-> exists between the two LANs (e.g., subnet routing is enabled). This is
-> unlike printer and NAS discovery where source addresses are rewritten to
-> enable cross-LAN connectivity.
+> **Note:** Minecraft LAN discovery relay has two modes depending on whether
+> Cylonix is installed on the server machine:
+>
+> - **Server has Cylonix installed:** The relay automatically sets up a TCP
+>   proxy on the injecting node. The `[AD]port[/AD]` in the announcement is
+>   rewritten to the proxy port, so the client connects to the injecting
+>   node's LAN IP, which forwards the game traffic directly to the server
+>   over the mesh. No subnet router required.
+>
+> - **Server does not have Cylonix:** The announcement is relayed as-is with
+>   the server's original LAN IP as the UDP source. The server is only
+>   connectable if subnet routing is enabled between the two LANs.
+>
+> Unlike printer/NAS discovery, the announced server IP is not rewritten in
+> the payload — connectivity is provided by the TCP proxy (Case 1) or subnet
+> routing (Case 2). Most game traffic uses UDP, but Minecraft Java Edition
+> uses TCP (port 25565 by default), which works cleanly through the mesh
+> with automatic TCP MSS clamping.
 
 **Not relayed by design:** Media casting services such as AirPlay
 (`_airplay._tcp`, `_raop._tcp`) and Google Cast (`_googlecast._tcp`) are
@@ -492,10 +504,12 @@ device such as a desktop PC, Linux server, or Android TV box.
   the Windows machine — another Windows PC, a Linux server, or an Android
   device. That peer captures the probe from the physical LAN and delivers the
   response back to Windows from an external LAN IP.
-- **Gaming discovery is LAN-announcement relay only.** Minecraft relay forwards
-  server announcements but does not rewrite addresses. Unlike printer/NAS
-  discovery, a discovered game server is only joinable if subnet routing connects
-  the two LANs. NVIDIA GameStream and Steam Remote Play use mDNS and are relayed
+- **Minecraft relay requires Cylonix on the server for proxy-based connectivity.**
+  When Cylonix is installed on the Minecraft server machine, the injecting node
+  automatically proxies the TCP game connection over the mesh — no subnet router
+  needed. When the server does not have Cylonix, the announcement is relayed
+  as-is and a subnet router must connect the two LANs for the game to be
+  joinable. NVIDIA GameStream and Steam Remote Play use mDNS and are relayed
   like other services.
 - **Disable on public Wi-Fi.** When connected to a public or shared network, turn off
   the relay to avoid capturing and forwarding local network traffic to your mesh.
