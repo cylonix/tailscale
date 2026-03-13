@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,6 +218,118 @@ func TestFilterRelayOnlinePeers(t *testing.T) {
 	}
 	if got[0].ID() != 1 {
 		t.Fatalf("filtered id=%v, want 1", got[0].ID())
+	}
+}
+
+func TestParseMinecraftAD(t *testing.T) {
+	cases := []struct {
+		payload  string
+		wantPort uint16
+		wantOK   bool
+	}{
+		{"[MOTD]My Server[/MOTD][AD]25565[/AD]", 25565, true},
+		{"[AD] 19132 [/AD]", 19132, true},
+		{"[AD]0[/AD]", 0, false},
+		{"no tags here", 0, false},
+		{"[AD][/AD]", 0, false},
+		{"[AD]99999[/AD]", 0, false},
+	}
+	for _, c := range cases {
+		port, ok := parseMinecraftAD([]byte(c.payload))
+		if ok != c.wantOK || port != c.wantPort {
+			t.Errorf("parseMinecraftAD(%q) = (%d, %v), want (%d, %v)", c.payload, port, ok, c.wantPort, c.wantOK)
+		}
+	}
+}
+
+func TestRewriteMinecraftAD(t *testing.T) {
+	original := []byte("[MOTD]Test Server[/MOTD][AD]25565[/AD]")
+	out, changed := rewriteMinecraftAD(original, 12345)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if got := string(out); got != "[MOTD]Test Server[/MOTD][AD]12345[/AD]" {
+		t.Fatalf("unexpected rewrite: %q", got)
+	}
+	// Rewriting to same port should not change.
+	_, changed = rewriteMinecraftAD(out, 12345)
+	if changed {
+		t.Fatal("same port should not change")
+	}
+}
+
+func TestMinecraftProxy(t *testing.T) {
+	// Start a real TCP server that echoes "MINECRAFT_OK".
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	serverPort := uint16(ln.Addr().(*net.TCPAddr).Port)
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				c.Write([]byte("MINECRAFT_OK"))
+			}(c)
+		}
+	}()
+
+	// Set up manager with a peer at 127.0.0.1 (the test TCP server).
+	const originID = tailcfg.NodeID(42)
+	b := &testBackend{nm: &netmap.NetworkMap{
+		SelfNode: (&tailcfg.Node{
+			ID:        100,
+			Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.10/32")},
+		}).View(),
+		Peers: []tailcfg.NodeView{
+			(&tailcfg.Node{
+				ID:        originID,
+				Addresses: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
+			}).View(),
+		},
+	}}
+	m := newL2RelayManager(b)
+
+	var injectedPayload []byte
+	m.injectPacketHook = func(_ l2RelayProto, payload []byte) {
+		injectedPayload = append([]byte(nil), payload...)
+	}
+
+	env := &l2RelayEnvelope{
+		OriginNodeID:        originID,
+		MinecraftServerPort: serverPort,
+		Payload:             []byte("[MOTD]Test[/MOTD][AD]25565[/AD]"),
+	}
+	m.injectMinecraftWithProxy(netip.AddrPort{}, env)
+
+	if injectedPayload == nil {
+		t.Fatal("inject hook was not called")
+	}
+	proxyPort, ok := parseMinecraftAD(injectedPayload)
+	if !ok || proxyPort == 0 {
+		t.Fatalf("injected payload has no valid [AD]port[/AD]: %q", injectedPayload)
+	}
+	if proxyPort == 25565 {
+		t.Fatalf("port was not rewritten (still 25565)")
+	}
+
+	// Connect to the proxy port and verify end-to-end.
+	conn, err := net.Dial("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(proxyPort))))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	if got := string(buf[:n]); got != "MINECRAFT_OK" {
+		t.Fatalf("proxy response: %q, want %q", got, "MINECRAFT_OK")
 	}
 }
 

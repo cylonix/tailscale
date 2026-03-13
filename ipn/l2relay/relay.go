@@ -79,6 +79,11 @@ type l2RelayEnvelope struct {
 	WSDQueryKey     string         `json:"wsd_query_key,omitempty"`
 	NetBIOSQueryKey string         `json:"netbios_query_key,omitempty"`
 	NetBIOSPort     uint16         `json:"netbios_port,omitempty"`
+	// MinecraftServerPort is set when the Minecraft server runs on the same node
+	// as the capturing Cylonix agent. The remote injector uses this to set up a
+	// TCP proxy to the origin node's Tailscale IP, enabling cross-LAN play without
+	// subnet routing.
+	MinecraftServerPort uint16 `json:"minecraft_server_port,omitempty"`
 	// MDNSReplySourceIP carries the source IP of a unicast mDNS reply captured via PAT.
 	// The destination peer may use this as a fallback target when SRV target A records are absent.
 	MDNSReplySourceIP string `json:"mdns_reply_source_ip,omitempty"`
@@ -118,6 +123,12 @@ type mdnsAliasTarget struct {
 	at     time.Time
 }
 
+type minecraftProxy struct {
+	localPort uint16
+	cancel    func()
+	lastSeen  time.Time
+}
+
 type l2RelayManager struct {
 	b Backend
 
@@ -146,6 +157,7 @@ type l2RelayManager struct {
 	netbiosPATByQuery  map[string]mdnsPATDestination
 	mdnsAliasByName    map[string]mdnsAliasTarget
 	proxyByUpstream    map[string]*l2RelayTCPProxy
+	mcProxies          map[string]*minecraftProxy // keyed by "originNodeID:serverPort"
 
 	captureParent    context.Context
 	captureCancel    context.CancelFunc
@@ -256,6 +268,7 @@ func newL2RelayManager(b Backend) *l2RelayManager {
 		netbiosPATByQuery:  make(map[string]mdnsPATDestination),
 		mdnsAliasByName:    make(map[string]mdnsAliasTarget),
 		proxyByUpstream:    make(map[string]*l2RelayTCPProxy),
+		mcProxies:          make(map[string]*minecraftProxy),
 		captureEnabled:     true,
 		sendSem:            make(chan struct{}, l2RelayMaxConcurrentPeerSends),
 	}
@@ -927,6 +940,7 @@ func (m *l2RelayManager) forwardCaptured(proto l2RelayProto, payload []byte, que
 		m.limitedLogf("l2relay: drop captured src=%s proto=%s sig=%s reason=duplicate_src_sig_window", src, proto, sig)
 		return
 	}
+	minecraftServerPort := uint16(0)
 	switch proto {
 	case l2ProtoMDNS:
 		summary, interested := summarizeDiscoveryPayload(proto, payload)
@@ -951,12 +965,22 @@ func (m *l2RelayManager) forwardCaptured(proto l2RelayProto, payload []byte, que
 			return
 		}
 	case l2ProtoMinecraft:
-		// Minecraft LAN discovery payload is relayed as-is. Note: the
-		// announcement carries the server's LAN IP, so the discovered server
-		// is only reachable if the client is on the same LAN segment or a
-		// routed path exists. Unlike printer/NAS discovery, no source-address
-		// rewriting is performed; Minecraft relay is LAN-local announcement
-		// forwarding only, not a fully proxied service.
+		// If the Minecraft server is running on this Cylonix node (capturedSrc
+		// matches our own LAN IP), record the server port in the envelope so
+		// the remote injecting node can proxy directly to our Tailscale IP.
+		// If the server is on a different machine on this LAN (no Cylonix),
+		// the envelope field is left zero and the remote node injects as-is,
+		// requiring subnet routing for connectivity.
+		if capturedSrc != nil {
+			if srcIP, ok := netip.AddrFromSlice(capturedSrc.IP); ok {
+				srcIP = srcIP.Unmap()
+				if selfLANIP, ok2 := m.selfLANIPv4ForRelay(); ok2 && srcIP == selfLANIP {
+					if port, ok3 := parseMinecraftAD(payload); ok3 {
+						minecraftServerPort = port
+					}
+				}
+			}
+		}
 	case l2ProtoWSD:
 		summary, interested := summarizeDiscoveryPayload(proto, payload)
 		if (!isWSDQueryShaped(payload) && !isWSDAnnounce(payload)) || !interested {
@@ -1049,6 +1073,9 @@ func (m *l2RelayManager) forwardCaptured(proto l2RelayProto, payload []byte, que
 					env.MDNSReplySourceIP = srcIP.String()
 				}
 			}
+		}
+		if proto == l2ProtoMinecraft && minecraftServerPort > 0 {
+			env.MinecraftServerPort = minecraftServerPort
 		}
 		m.sendEnvelopeToPeerAsync(dstIP, p, env)
 	}
@@ -1254,8 +1281,12 @@ func (m *l2RelayManager) handleIncomingEnvelope(src netip.AddrPort, selfAddr net
 		return nil
 	}
 	if env.Proto == l2ProtoMinecraft {
-		m.injectToLocalDiscovery(env.Proto, env.Payload)
-		m.logf("[v2] l2relay: minecraft injected from=%v sig=%s", src, payloadSig)
+		if env.MinecraftServerPort > 0 {
+			m.injectMinecraftWithProxy(src, &env)
+		} else {
+			m.injectToLocalDiscovery(env.Proto, env.Payload)
+		}
+		m.logf("[v2] l2relay: minecraft injected from=%v sig=%s proxy_port=%d", src, payloadSig, env.MinecraftServerPort)
 		return nil
 	}
 	if env.Proto == l2ProtoMDNS {

@@ -138,7 +138,7 @@ l2relaytest-container: ## Run a lighter container integration pass on one distro
 	echo "Testing on ubuntu:focal (lite)" && docker build --build-arg="BASE=ubuntu:focal" -t ssh-ubuntu-focal ssh/tailssh/testcontainers
 
 l2relaytest-vm: ## Run VM-based L2 integration test with mac-friendly defaults
-	PATH="$(PWD)/.tools/bin:$$PATH" ./tool/go test ${L2TEST_FLAG} ./tstest/integration/vms -run 'TestVML2DiscoveryRulesConnectivity|TestVML2RelayUDPInterceptE2E|TestVML2RelayNASShareE2E' -count=1 --run-vm-tests --no-s3
+	PATH="$(PWD)/.tools/bin:$$PATH" ./tool/go test ${L2TEST_FLAG} ./tstest/integration/vms -run 'TestVML2DiscoveryRulesConnectivity|TestVML2RelayUDPInterceptE2E|TestVML2RelayNASShareE2E|TestVML2RelayMinecraftE2E' -count=1 --run-vm-tests --no-s3
 # __END_CYLONIX_ADD__
 
 help: ## Show this help
