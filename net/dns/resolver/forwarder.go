@@ -942,7 +942,10 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		resolvers = f.resolvers(domain)
 		if len(resolvers) == 0 {
 			metricDNSFwdErrorNoUpstream.Add(1)
-			f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: ""})
+			f.health.SetUnhealthy(dnsForwarderFailing, health.Args{
+				health.ArgDNSServers: "",
+				health.ArgTag:        "no upstream resolvers set",
+			})
 			f.logf("no upstream resolvers set, returning SERVFAIL")
 
 			// Attempt to recompile the DNS configuration
@@ -1048,7 +1051,11 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 						for _, rr := range resolvers {
 							resolverAddrs = append(resolverAddrs, rr.name.Addr)
 						}
-						f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: strings.Join(resolverAddrs, ",")})
+						f.health.SetUnhealthy(dnsForwarderFailing,
+							health.Args{
+								health.ArgDNSServers: strings.Join(resolverAddrs, ","),
+								health.ArgTag:        "all resolvers failed. ctx done with errors",
+							})
 					case responseChan <- res:
 						if verboseDNSForward() {
 							f.logf("forwarder response(%d, %v, %d) = %d, %v", fq.txid, typ, len(domain), len(res.bs), firstErr)
@@ -1073,7 +1080,11 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 			for _, rr := range resolvers {
 				resolverAddrs = append(resolverAddrs, rr.name.Addr)
 			}
-			f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: strings.Join(resolverAddrs, ",")})
+			f.health.SetUnhealthy(dnsForwarderFailing,
+				health.Args{
+					health.ArgDNSServers: strings.Join(resolverAddrs, ","),
+					health.ArgTag:        "all resolvers failed. ctx done without errors",
+				})
 			return fmt.Errorf("waiting for response or error from %v: %w", resolverAddrs, ctx.Err())
 		}
 	}

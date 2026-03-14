@@ -536,6 +536,7 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 
 	b.setTCPPortsIntercepted(nil)
 	b.setVIPServicesTCPPortsIntercepted(nil)
+	b.shouldInterceptUDPPortAtomic.Store(func(uint16) bool { return false }) // __CYLONIX_ADD__
 
 	b.statusChanged = sync.NewCond(&b.statusLock)
 	b.e.SetStatusCallback(b.setWgengineStatus)
@@ -919,7 +920,7 @@ func (b *LocalBackend) onHealthChange(w *health.Warnable, us *health.UnhealthySt
 	if us == nil {
 		b.logf("health(warnable=%s): ok", w.Code)
 	} else {
-		b.logf("health(warnable=%s): error: %s", w.Code, us.Text)
+		b.logf("health(warnable=%s): error: %s %v", w.Code, us.Text, us.Args)
 	}
 
 	// Whenever health changes, send the current health state to the frontend.
@@ -3550,6 +3551,7 @@ func (b *LocalBackend) setAtomicValuesFromPrefsLocked(p ipn.PrefsView) {
 	if !p.Valid() {
 		b.containsViaIPFuncAtomic.Store(ipset.FalseContainsIPFunc())
 		b.setTCPPortsIntercepted(nil)
+		b.shouldInterceptUDPPortAtomic.Store(func(uint16) bool { return false }) // __CYLONIX_ADD__
 		b.setVIPServicesTCPPortsInterceptedLocked(nil)
 		b.lastServeConfJSON = mem.B(nil)
 		b.serveConfig = ipn.ServeConfigView{}
@@ -7388,7 +7390,11 @@ func (b *LocalBackend) ShouldInterceptTCPPort(port uint16) bool {
 
 // __BEGIN_CYLONIX_ADD__
 func (b *LocalBackend) ShouldInterceptUDPPort(port uint16) bool {
-	return b.shouldInterceptUDPPortAtomic.Load()(port)
+	f := b.shouldInterceptUDPPortAtomic.Load()
+	if f == nil {
+		return false
+	}
+	return f(port)
 }
 
 // StoreTestFilter is a test-only helper that replaces filterAtomic directly
