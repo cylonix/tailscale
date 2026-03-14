@@ -60,7 +60,9 @@ cat <<EOF | sudo tee /usr/local/etc/xray/config.json
       "xhttpSettings": {
         "mode": "stream-up",
         "host": "www.microsoft.com",
-        "path": "/cylonix-derp-tunnel"
+        "path": "/cylonix-derp-tunnel",
+        "scStreamUpServerSecs": "3600-7200",
+        "scMinPostsIntervalMs": 0
       }
     }
   }],
