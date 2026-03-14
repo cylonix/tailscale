@@ -1016,6 +1016,12 @@ func (ns *Impl) shouldProcessInbound(p *packet.Parsed, t *tstun.Wrapper) bool {
 			return true
 		}
 	}
+	if ns.lb != nil && p.IPProto == ipproto.UDP && isLocal {
+		if ns.lb.ShouldInterceptUDPPort(p.Dst.Port()) {
+			ns.logf("netstack: shouldProcessInbound UDP local intercept src=%v dst=%v", p.Src, p.Dst)
+			return true
+		}
+	}
 	if ns.lb != nil && p.IPProto == ipproto.TCP && isService {
 		// An assumption holds for this to work: when tun mode is on for a service,
 		// its tcp and web are not set. This is enforced in b.setServeConfigLocked.
@@ -1538,6 +1544,20 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) bool {
 			return false // Only MagicDNS and loopback traffic runs on the service IPs for now.
 		}
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	if ns.lb != nil {
+		h, intercept := ns.lb.UDPHandlerForDst(srcAddr, dstAddr)
+		if intercept {
+			if h == nil {
+				ep.Close()
+				return false
+			}
+			go h(gonet.NewUDPConn(&wq, ep))
+			return true
+		}
+	}
+	// __END_CYLONIX_ADD__
 
 	if get := ns.GetUDPHandlerForFlow; get != nil {
 		h, intercept := get(srcAddr, dstAddr)

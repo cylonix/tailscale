@@ -81,6 +81,8 @@ type mapSession struct {
 	lastPacketFilterRules  views.Slice[tailcfg.FilterRule] // concatenation of all namedPacketFilters
 	namedPacketFilters     map[string]views.Slice[tailcfg.FilterRule]
 	lastParsedPacketFilter []filter.Match
+	// Caches control-delivered L2 discovery relay rules for netmap emission.
+	lastL2DiscoveryRules views.Slice[tailcfg.L2DiscoveryRule] // __CYLONIX_ADD__
 	lastSSHPolicy          *tailcfg.SSHPolicy
 	collectServices        bool
 	lastDomain             string
@@ -195,7 +197,7 @@ func (ms *mapSession) HandleNonKeepAliveMapResponse(ctx context.Context, resp *t
 				for _, n := range r.Nodes {
 					if n.XRay != nil {
 						ms.logf("DERP region %d/%v node xray underlay: %#v",
-								r.RegionID, n.Name, *n.XRay)
+							r.RegionID, n.Name, *n.XRay)
 					}
 				}
 			}
@@ -377,6 +379,11 @@ func (ms *mapSession) updateStateFromResponse(resp *tailcfg.MapResponse) {
 			ms.logf("parsePacketFilter: %v", err)
 		}
 	}
+	// __BEGIN_CYLONIX_ADD__
+	if rules := resp.L2DiscoveryRules; rules != nil {
+		ms.lastL2DiscoveryRules = views.SliceOf(rules)
+	}
+	// __END_CYLONIX_ADD__
 	if c := resp.DNSConfig; c != nil {
 		ms.lastDNSConfig = c
 	}
@@ -829,6 +836,7 @@ func (ms *mapSession) netmap() *netmap.NetworkMap {
 		DNS:               *ms.lastDNSConfig,
 		PacketFilter:      ms.lastParsedPacketFilter,
 		PacketFilterRules: ms.lastPacketFilterRules,
+		L2DiscoveryRules:  ms.lastL2DiscoveryRules, // __CYLONIX_ADD__
 		SSHPolicy:         ms.lastSSHPolicy,
 		CollectServices:   ms.collectServices,
 		DERPMap:           ms.lastDERPMap,

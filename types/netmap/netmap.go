@@ -42,6 +42,7 @@ type NetworkMap struct {
 
 	PacketFilter      []filtertype.Match
 	PacketFilterRules views.Slice[tailcfg.FilterRule]
+	L2DiscoveryRules  views.Slice[tailcfg.L2DiscoveryRule] // __CYLONIX_ADD__
 	SSHPolicy         *tailcfg.SSHPolicy // or nil, if not enabled/allowed
 
 	// CollectServices reports whether this node's Tailnet has

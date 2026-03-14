@@ -938,18 +938,18 @@ func parseFlags(flagArgs []string) error {
 		return nil
 	}
 	// Temporarily replace os.Args with just the program name + flags
-    savedArgs := os.Args
-    os.Args = append([]string{os.Args[0]}, flagArgs...)
+	savedArgs := os.Args
+	os.Args = append([]string{os.Args[0]}, flagArgs...)
 
-    // Re-parse using the global flags
-    flag.CommandLine.Parse(flagArgs)
+	// Re-parse using the global flags
+	flag.CommandLine.Parse(flagArgs)
 
-    // Restore os.Args
-    os.Args = savedArgs
+	// Restore os.Args
+	os.Args = savedArgs
 
-    log.Printf("Subprocess re-parsed %d flags: %v", len(flagArgs), flagArgs)
-    log.Printf("Active config: port=%d, tun=%s, socket=%s",
-        args.port, args.tunname, args.socketpath)
+	log.Printf("Subprocess re-parsed %d flags: %v", len(flagArgs), flagArgs)
+	log.Printf("Active config: port=%d, tun=%s, socket=%s",
+		args.port, args.tunname, args.socketpath)
 
 	return nil
 }

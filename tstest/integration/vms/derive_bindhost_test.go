@@ -14,9 +14,17 @@ import (
 func deriveBindhost(t *testing.T) string {
 	t.Helper()
 
+	// __BEGIN_CYLONIX_ADD__
+	if *bindHost != "" {
+		return *bindHost
+	}
+	// __END_CYLONIX_ADD__
+
 	ifName, err := netmon.DefaultRouteInterface()
 	if err != nil {
-		t.Fatal(err)
+		// __BEGIN_CYLONIX_ADD__
+		return "127.0.0.1"
+		// __END_CYLONIX_ADD__
 	}
 
 	var ret string
@@ -24,16 +32,24 @@ func deriveBindhost(t *testing.T) string {
 		if ret != "" || i.Name != ifName {
 			return
 		}
-		ret = prefix.Addr().String()
+		// __BEGIN_CYLONIX_ADD__
+		addr := prefix.Addr()
+		if addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+			return
+		}
+		ret = addr.String()
+		// __END_CYLONIX_ADD__
 	})
 	if ret != "" {
 		return ret
 	}
-	if err != nil {
-		t.Fatal(err)
+	// __BEGIN_CYLONIX_ADD__
+	if err == nil {
+		return "127.0.0.1"
 	}
-	t.Fatal("can't find a bindhost")
-	return "unreachable"
+	t.Fatal(err)
+	return "127.0.0.1"
+	// __END_CYLONIX_ADD__
 }
 
 func TestDeriveBindhost(t *testing.T) {

@@ -179,4 +179,10 @@ func (e *watchdogEngine) SetTunnelName(_ string) {
 	// no-op
 }
 
+func (e *watchdogEngine) InjectInboundRaw(pkt []byte) error {
+	var err error
+	e.watchdog("InjectInboundRaw", func() { err = e.wrap.InjectInboundRaw(pkt) })
+	return err
+}
+
 // __END_CYLONIX_ADD__

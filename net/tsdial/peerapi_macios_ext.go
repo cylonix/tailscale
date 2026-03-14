@@ -22,19 +22,18 @@ func init() {
 }
 
 func peerDialControlFuncNetworkExtension(d *Dialer) func(network, address string, c syscall.RawConn) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	index := -1
-	if x, ok := interfaceIndexLocked(d); ok {
-		index = x
-	}
-	var lc net.ListenConfig
-	netns.SetListenConfigInterfaceIndex(&lc, index)
 	return func(network, address string, c syscall.RawConn) error {
+		d.mu.Lock()
+		index := -1
+		if x, ok := interfaceIndexLocked(d); ok {
+			index = x
+		}
+		d.mu.Unlock()
 		if index == -1 {
 			return errors.New("failed to find TUN interface to bind to")
 		}
+		var lc net.ListenConfig
+		netns.SetListenConfigInterfaceIndex(&lc, index)
 		return lc.Control(network, address, c)
 	}
 }

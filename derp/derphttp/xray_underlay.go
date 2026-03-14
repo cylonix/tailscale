@@ -387,6 +387,14 @@ func xrayConfigForNode(node *tailcfg.DERPNode, port xnet.Port, serverName, dialA
 		XHTTPSettings: &conf.SplitHTTPConfig{
 			Host: xhttpHost,
 			Path: tunnelPath,
+			// stream-up sends one continuous HTTP POST for the upload
+			// direction instead of a new POST per chunk (packet-up).
+			// packet-up (the "auto" default on HTTP/1.1) caps throughput
+			// at roughly batch_size / max(RTT, ScMinPostsIntervalMs=30ms),
+			// which limits a single DERP relay connection to ~15-40 Mbps.
+			// stream-up eliminates the per-POST round-trip overhead and
+			// matches the server-side "stream-up" configuration.
+			Mode: "stream-up",
 		},
 	}
 

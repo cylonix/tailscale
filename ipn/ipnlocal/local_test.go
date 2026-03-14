@@ -457,6 +457,9 @@ func newTestLocalBackendWithSys(t testing.TB, sys *tsd.System) *LocalBackend {
 	if err != nil {
 		t.Fatalf("NewLocalBackend: %v", err)
 	}
+	if lb.l2Relay != nil {
+		lb.l2Relay.UnregisterNetworkChangeCallbackForTest()
+	}
 	t.Cleanup(lb.Shutdown)
 	return lb
 }

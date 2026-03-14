@@ -137,5 +137,9 @@ type Engine interface {
 
 	// SetTunnelName sets the tunnel name
 	SetTunnelName(string)
+
+	// InjectInboundRaw injects a raw packet into the local stack via the
+	// engine's tunnel device.
+	InjectInboundRaw([]byte) error
 	// __END_CYLONIX_ADD__
 }

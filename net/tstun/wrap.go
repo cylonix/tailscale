@@ -4,6 +4,7 @@
 package tstun
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"go4.org/mem"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"tailscale.com/disco"
+	"tailscale.com/envknob"
 	tsmetrics "tailscale.com/metrics"
 	"tailscale.com/net/connstats"
 	"tailscale.com/net/packet"
@@ -67,6 +69,42 @@ var (
 	errOffsetTooBig   = errors.New("offset larger than buffer length")
 	errOffsetTooSmall = errors.New("offset smaller than PacketStartOffset")
 )
+
+var debugL2RelayTCP5357Log = envknob.RegisterBool("TS_DEBUG_L2RELAY_TCP5357_LOG")
+
+func isLikelyPlainHTTPPayload(b []byte) bool {
+	return bytes.HasPrefix(b, []byte("GET ")) ||
+		bytes.HasPrefix(b, []byte("POST ")) ||
+		bytes.HasPrefix(b, []byte("PUT ")) ||
+		bytes.HasPrefix(b, []byte("DELETE ")) ||
+		bytes.HasPrefix(b, []byte("HEAD ")) ||
+		bytes.HasPrefix(b, []byte("OPTIONS ")) ||
+		bytes.HasPrefix(b, []byte("PATCH ")) ||
+		bytes.HasPrefix(b, []byte("HTTP/"))
+}
+
+func maybeLogACLHTTP5357(logf logger.Logf, dir string, p *packet.Parsed, verdict filter.Response) {
+	if !debugL2RelayTCP5357Log() {
+		return
+	}
+	if p == nil || p.IPProto != ipproto.TCP {
+		return
+	}
+	if p.Src.Port() != 5357 && p.Dst.Port() != 5357 {
+		return
+	}
+	payload := p.Payload()
+	if len(payload) == 0 {
+		logf("tstun: acl tcp5357 dir=%s verdict=%v src=%v dst=%v flags=0x%02x payload=0", dir, verdict, p.Src, p.Dst, uint8(p.TCPFlags))
+		return
+	}
+	preview := payload
+	if isLikelyPlainHTTPPayload(payload) {
+		logf("tstun: acl http5357 dir=%s verdict=%v src=%v dst=%v flags=0x%02x bytes=%d preview=%q", dir, verdict, p.Src, p.Dst, uint8(p.TCPFlags), len(payload), string(preview))
+		return
+	}
+	logf("tstun: acl tcp5357 dir=%s verdict=%v src=%v dst=%v flags=0x%02x bytes=%d payload_hex=%x", dir, verdict, p.Src, p.Dst, uint8(p.TCPFlags), len(payload), preview)
+}
 
 // parsedPacketPool holds a pool of Parsed structs for use in filtering.
 // This is needed because escape analysis cannot see that parsed packets
@@ -183,6 +221,15 @@ type Wrapper struct {
 	// packets which it handles internally. If both this and PreFilterFromTunToNetstack
 	// filter functions are non-nil, this filter runs second.
 	PreFilterPacketOutboundToWireGuardEngineIntercept FilterFunc
+	// __BEGIN_CYLONIX_ADD__
+	// PreFilterPacketOutboundCapture is an optional capture-only hook that runs
+	// before the main outbound filter. It is called for every outbound packet that
+	// was not already consumed by the engine or netstack intercept hooks. The
+	// return value is ignored — the hook must not drop packets; it exists solely
+	// to allow components such as the L2 relay to observe packets before the main
+	// filter discards them (e.g. multicast destinations).
+	PreFilterPacketOutboundCapture FilterFunc
+	// __END_CYLONIX_ADD__
 	// PostFilterPacketOutboundToWireGuard is the outbound filter function that runs after the main filter.
 	PostFilterPacketOutboundToWireGuard FilterFunc
 
@@ -878,6 +925,12 @@ func (t *Wrapper) filterPacketOutboundToWireGuard(p *packet.Parsed, pc *peerConf
 		}
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	if t.PreFilterPacketOutboundCapture != nil {
+		t.PreFilterPacketOutboundCapture(p, t) // capture-only; return value intentionally ignored
+	}
+	// __END_CYLONIX_ADD__
+
 	// If the outbound packet is to a jailed peer, use our jailed peer
 	// packet filter.
 	var filt *filter.Filter
@@ -891,6 +944,7 @@ func (t *Wrapper) filterPacketOutboundToWireGuard(p *packet.Parsed, pc *peerConf
 	}
 
 	if resp, reason := filt.RunOut(p, t.filterFlags); resp != filter.Accept {
+		maybeLogACLHTTP5357(t.logf, "out", p, resp)
 		metricPacketOutDropFilter.Add(1)
 		if reason != "" {
 			t.metrics.outboundDroppedPacketsTotal.Add(usermetric.DropLabels{
@@ -899,6 +953,7 @@ func (t *Wrapper) filterPacketOutboundToWireGuard(p *packet.Parsed, pc *peerConf
 		}
 		return filter.Drop, gro
 	}
+	maybeLogACLHTTP5357(t.logf, "out", p, filter.Accept)
 
 	if t.PostFilterPacketOutboundToWireGuard != nil {
 		if res := t.PostFilterPacketOutboundToWireGuard(p, t); res.IsDrop() {
@@ -1083,6 +1138,7 @@ func (t *Wrapper) injectedRead(res tunInjectedRead, outBuffs [][]byte, sizes []i
 	p := parsedPacketPool.Get().(*packet.Parsed)
 	defer parsedPacketPool.Put(p)
 	p.Decode(pkt)
+	maybeLogACLHTTP5357(t.logf, "out-injected", p, filter.Accept)
 
 	invertGSOChecksum(pkt, gso)
 	pc.snat(p)
@@ -1177,6 +1233,7 @@ func (t *Wrapper) filterPacketInboundFromWireGuard(p *packet.Parsed, captHook pa
 			outcome = filter.Accept
 		}
 	}
+	maybeLogACLHTTP5357(t.logf, "in", p, outcome)
 
 	if outcome != filter.Accept {
 		metricPacketInDropFilter.Add(1)

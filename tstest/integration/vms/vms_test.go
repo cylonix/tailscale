@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,8 +39,12 @@ const (
 )
 
 var (
-	runVMTests        = flag.Bool("run-vm-tests", false, "if set, run expensive VM based integration tests")
-	noS3              = flag.Bool("no-s3", false, "if set, always download images from the public internet (risks breaking)")
+	runVMTests = flag.Bool("run-vm-tests", false, "if set, run expensive VM based integration tests")
+	noS3       = flag.Bool("no-s3", false, "if set, always download images from the public internet (risks breaking)")
+	// __BEGIN_CYLONIX_ADD__
+	bindHost  = flag.String("bind-host", "", "host IP to bind local integration listeners to; empty means auto-detect")
+	qemuAccel = flag.String("qemu-accel", "", "qemu accelerator to use (kvm|hvf|tcg|auto); empty means platform default")
+	// __END_CYLONIX_ADD__
 	vmRamLimit        = flag.Int("ram-limit", 4096, "the maximum number of megabytes of ram that can be used for VMs, must be greater than or equal to 1024")
 	useVNC            = flag.Bool("use-vnc", false, "if set, display guest vms over VNC")
 	verboseLogcatcher = flag.Bool("verbose-logcatcher", true, "if set, print logcatcher to t.Logf")
@@ -94,6 +99,20 @@ func run(t *testing.T, dir, prog string, args ...string) {
 	}
 }
 
+func isoImageTool(t *testing.T) string {
+	t.Helper()
+
+	for _, prog := range []string{"genisoimage", "mkisofs"} {
+		if _, err := exec.LookPath(prog); err == nil {
+			return prog
+		}
+	}
+
+	t.Logf("hint: nix-shell -p go -p qemu -p cdrkit --run 'go test --v --timeout=60m --run-vm-tests'")
+	t.Fatal(`missing dependency: neither "genisoimage" nor "mkisofs" was found in $PATH`)
+	return ""
+}
+
 // mkLayeredQcow makes a layered qcow image that allows us to keep the upstream
 // VM images pristine and only do our changes on an overlay.
 func mkLayeredQcow(t *testing.T, tdir string, d Distro, qcowBase string) {
@@ -114,7 +133,7 @@ var (
 
 // mkSeed makes the cloud-init seed ISO that is used to configure a VM with
 // tailscale.
-func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
+func mkSeed(t *testing.T, d Distro, hostname, sshKey, hostURL, tdir string, port int) {
 	t.Helper()
 
 	dir := filepath.Join(tdir, d.Name, "seed")
@@ -132,7 +151,7 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 			Hostname string
 		}{
 			ID:       "31337",
-			Hostname: d.Name,
+			Hostname: hostname,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -161,7 +180,7 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 		}{
 			SSHKey:     strings.TrimSpace(sshKey),
 			HostURL:    hostURL,
-			Hostname:   d.Name,
+			Hostname:   hostname,
 			Port:       port,
 			InstallPre: d.InstallPre(),
 			Password:   securePassword,
@@ -187,7 +206,7 @@ func mkSeed(t *testing.T, d Distro, sshKey, hostURL, tdir string, port int) {
 		args = append(args, filepath.Join(dir, "openstack"))
 	}
 
-	run(t, tdir, "genisoimage", args...)
+	run(t, tdir, isoImageTool(t), args...)
 }
 
 // ipMapping maps a hostname, SSH port and SSH IP together
@@ -236,15 +255,20 @@ func setupTests(t *testing.T) {
 
 	os.Setenv("CGO_ENABLED", "0")
 
-	if _, err := exec.LookPath("qemu-system-x86_64"); err != nil {
+	// __BEGIN_CYLONIX_MOD__
+	qemuDep := "qemu-system-x86_64"
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("qemu-system-aarch64"); err == nil {
+			qemuDep = "qemu-system-aarch64"
+		}
+	}
+	if _, err := exec.LookPath(qemuDep); err != nil {
 		t.Logf("hint: nix-shell -p go -p qemu -p cdrkit --run 'go test --v --timeout=60m --run-vm-tests'")
 		t.Fatalf("missing dependency: %v", err)
 	}
+	// __END_CYLONIX_MOD__
 
-	if _, err := exec.LookPath("genisoimage"); err != nil {
-		t.Logf("hint: nix-shell -p go -p qemu -p cdrkit --run 'go test --v --timeout=60m --run-vm-tests'")
-		t.Fatalf("missing dependency: %v", err)
-	}
+	isoImageTool(t)
 }
 
 var ramsem struct {
@@ -276,10 +300,10 @@ func testOneDistribution(t *testing.T, n int, distro Distro) {
 	vm := h.mkVM(t, n, distro, h.pubKey, h.loginServerURL, dir)
 	vm.waitStartup(t)
 
-	h.testDistro(t, distro, h.waitForIPMap(t, vm, distro))
+	h.testDistro(t, distro, h.waitForIPMap(t, vm))
 }
 
-func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance, distro Distro) ipMapping {
+func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance) ipMapping {
 	t.Helper()
 	var ipm ipMapping
 
@@ -289,7 +313,7 @@ func (h *Harness) waitForIPMap(t *testing.T, vm *vmInstance, distro Distro) ipMa
 		var ok bool
 
 		h.ipMu.Lock()
-		ipm, ok = h.ipMap[distro.Name]
+		ipm, ok = h.ipMap[vm.name]
 		h.ipMu.Unlock()
 
 		if ok {
@@ -364,11 +388,14 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 			// ready once the `tailscale up` command is sent. This is not ideal, but I
 			// am not really sure there is a good way around this without a delay of
 			// some kind.
-			batch = append(batch, &expect.BSnd{S: "rc-service tailscaled start && sleep 2\n"})
+			batch = append(batch, &expect.BSnd{S: "rc-service tailscaled start && sleep 2 && echo STARTED\n"}) // __CYLONIX_MOD__
 		case "systemd":
-			batch = append(batch, &expect.BSnd{S: "systemctl start tailscaled.service\n"})
+			// __BEGIN_CYLONIX_MOD__
+			batch = append(batch, &expect.BSnd{S: "for i in $(seq 1 20); do systemctl daemon-reload; systemctl restart tailscaled.service; if systemctl is-active --quiet tailscaled.service; then echo STARTED; break; fi; sleep 1; done\n"})
+			// __END_CYLONIX_MOD__
 		}
 
+		batch = append(batch, &expect.BExp{R: `STARTED`}) // __CYLONIX_ADD__
 		batch = append(batch, &expect.BExp{R: `(\#)`})
 
 		runTestCommands(t, timeout, cli, batch)
@@ -376,7 +403,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 
 	t.Run("login", func(t *testing.T) {
 		runTestCommands(t, timeout, cli, []expect.Batcher{
-			&expect.BSnd{S: fmt.Sprintf("tailscale up --login-server=%s\n", loginServer)},
+			&expect.BSnd{S: fmt.Sprintf("tailscale --socket=/run/tailscale/tailscaled.sock up --login-server=%s\n", loginServer)}, // __CYLONIX_MOD__
 			&expect.BSnd{S: "echo Success.\n"},
 			&expect.BExp{R: `Success.`},
 		})
@@ -394,7 +421,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 		for count := 0; count < 10; count++ {
 			sess := getSession(t, cli)
 
-			outp, err = sess.CombinedOutput("tailscale status")
+			outp, err = sess.CombinedOutput("tailscale --socket=/run/tailscale/tailscaled.sock status") // __CYLONIX_MOD__
 			if err == nil {
 				t.Logf("tailscale status: %s", outp)
 				if !strings.Contains(string(outp), "100.64.0.1") {
@@ -445,7 +472,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 		t.Run(tt.ipProto+"-address", func(t *testing.T) {
 			sess := getSession(t, cli)
 
-			ipBytes, err := sess.Output("tailscale ip -" + string(tt.ipProto[len(tt.ipProto)-1]))
+			ipBytes, err := sess.Output("tailscale --socket=/run/tailscale/tailscaled.sock ip -" + string(tt.ipProto[len(tt.ipProto)-1])) // __CYLONIX_MOD__
 			if err != nil {
 				t.Fatalf("can't get IP: %v", err)
 			}
@@ -468,7 +495,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 			t.Fatalf("can't make incoming session: %v", err)
 		}
 		defer sess.Close()
-		ipBytes, err := sess.Output("tailscale ip -4")
+		ipBytes, err := sess.Output("tailscale --socket=/run/tailscale/tailscaled.sock ip -4") // __CYLONIX_MOD__
 		if err != nil {
 			t.Fatalf("can't run `tailscale ip -4`: %v", err)
 		}
@@ -496,7 +523,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 		}
 		defer sess.Close()
 
-		testIPBytes, err := sess.Output("tailscale ip -4")
+		testIPBytes, err := sess.Output("tailscale --socket=/run/tailscale/tailscaled.sock ip -4") // __CYLONIX_MOD__
 		if err != nil {
 			t.Fatalf("can't run command on remote VM: %v", err)
 		}
@@ -595,7 +622,7 @@ func (h *Harness) testDistro(t *testing.T, d Distro, ipm ipMapping) {
 		}
 		defer sess.Close()
 
-		ip, err := sess.Output("tailscale ip -4")
+		ip, err := sess.Output("tailscale --socket=/run/tailscale/tailscaled.sock ip -4") // __CYLONIX_MOD__
 		if err != nil {
 			t.Fatalf("can't nab ipv4 address: %v", err)
 		}

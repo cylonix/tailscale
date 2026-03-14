@@ -399,6 +399,27 @@ func TestShouldProcessInbound(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "l2relay-peerapi-intercept-local-ip-without-process-local-ips",
+			pkt: &packet.Parsed{
+				IPVersion: 4,
+				IPProto:   ipproto.TCP,
+				Src:       netip.MustParseAddrPort("100.101.102.103:1234"),
+				Dst:       netip.MustParseAddrPort("100.101.102.104:5555"),
+				TCPFlags:  0, // non-SYN path uses cached PeerAPI port
+			},
+			beforeStart: func(i *Impl) {
+				i.ProcessLocalIPs = false
+				i.ProcessSubnets = false
+			},
+			afterStart: func(i *Impl) {
+				i.atomicIsLocalIPFunc.Store(func(addr netip.Addr) bool {
+					return addr.String() == "100.101.102.104"
+				})
+				i.peerapiPort4Atomic.Store(5555)
+			},
+			want: true,
+		},
+		{
 			name: "process-subnets",
 			pkt: &packet.Parsed{
 				IPVersion: 4,
