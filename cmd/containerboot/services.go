@@ -22,6 +22,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"tailscale.com/client/tailscale"
+	"tailscale.com/customize"
 	"tailscale.com/ipn"
 	"tailscale.com/kube/egressservices"
 	"tailscale.com/kube/kubeclient"
@@ -33,7 +34,7 @@ import (
 	"tailscale.com/util/mak"
 )
 
-const tailscaleTunInterface = "tailscale0"
+const tailscaleTunInterface = customize.DefaultTunnelName // __CYLONIX_MOD__
 
 // This file contains functionality to run containerboot as a proxy that can
 // route cluster traffic to one or more tailnet targets, based on portmapping

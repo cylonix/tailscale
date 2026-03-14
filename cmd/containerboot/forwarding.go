@@ -15,8 +15,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tailscale.com/customize"
 	"tailscale.com/util/linuxfw"
 )
+
+const defaultTunInterface = customize.DefaultTunnelName // __CYLONIX_ADD__
 
 // ensureIPForwarding enables IPv4/IPv6 forwarding for the container.
 func ensureIPForwarding(root, clusterProxyTargetIP, tailnetTargetIP, tailnetTargetFQDN string, routes *string) error {
@@ -114,13 +117,13 @@ func installEgressForwardingRule(_ context.Context, dstStr string, tsIPs []netip
 	if !local.IsValid() {
 		return fmt.Errorf("no tailscale IP matching family of %s found in %v", dstStr, tsIPs)
 	}
-	if err := nfr.DNATNonTailscaleTraffic("tailscale0", dst); err != nil {
+	if err := nfr.DNATNonTailscaleTraffic(defaultTunInterface, dst); err != nil { // __CYLONIX_MOD__
 		return fmt.Errorf("installing egress proxy rules: %w", err)
 	}
 	if err := nfr.EnsureSNATForDst(local, dst); err != nil {
 		return fmt.Errorf("installing egress proxy rules: %w", err)
 	}
-	if err := nfr.ClampMSSToPMTU("tailscale0", dst); err != nil {
+	if err := nfr.ClampMSSToPMTU(defaultTunInterface, dst); err != nil { // __CYLONIX_MOD__
 		return fmt.Errorf("installing egress proxy rules: %w", err)
 	}
 	return nil
@@ -184,7 +187,7 @@ func installIngressForwardingRule(_ context.Context, dstStr string, tsIPs []neti
 	if err := nfr.AddDNATRule(local, dst); err != nil {
 		return fmt.Errorf("installing ingress proxy rules: %w", err)
 	}
-	if err := nfr.ClampMSSToPMTU("tailscale0", dst); err != nil {
+	if err := nfr.ClampMSSToPMTU(defaultTunInterface, dst); err != nil { // __CYLONIX_MOD__
 		return fmt.Errorf("installing ingress proxy rules: %w", err)
 	}
 	return nil
@@ -236,8 +239,8 @@ func installIngressForwardingRuleForDNSTarget(_ context.Context, backendAddrs []
 		// tailscale interfaces. Clamp MSS of packets going out via
 		// tailscale0 interface to its MTU to prevent broken connections
 		// in environments where path MTU discovery is not working.
-		if err := nfr.ClampMSSToPMTU("tailscale0", dst); err != nil {
-			return fmt.Errorf("adding rule to clamp traffic via tailscale0: %v", err)
+		if err := nfr.ClampMSSToPMTU(defaultTunInterface, dst); err != nil { // __CYLONIX_MOD__
+			return fmt.Errorf("adding rule to clamp traffic via %s: %v", defaultTunInterface, err) // __CYLONIX_MOD__
 		}
 		return nil
 	}
