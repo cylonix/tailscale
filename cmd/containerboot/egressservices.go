@@ -23,6 +23,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"tailscale.com/client/local"
+	"tailscale.com/customize"
 	"tailscale.com/ipn"
 	"tailscale.com/kube/egressservices"
 	"tailscale.com/kube/kubeclient"
@@ -32,7 +33,7 @@ import (
 	"tailscale.com/util/mak"
 )
 
-const tailscaleTunInterface = "tailscale0"
+const tailscaleTunInterface = customize.DefaultTunnelName // __CYLONIX_MOD__
 
 // Modified using a build flag to speed up tests.
 var testSleepDuration string

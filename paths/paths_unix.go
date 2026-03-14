@@ -12,8 +12,17 @@ import (
 	"runtime"
 
 	"golang.org/x/sys/unix"
+	"tailscale.com/customize"
 	"tailscale.com/version/distro"
 )
+
+// __BEGIN_CYLONIX_ADD__
+var (
+	program       = customize.LinuxProgramName
+	daemonProgram = customize.ServiceName
+	darwinProgram = customize.ProgramName
+)
+// __END_CYLONIX_ADD__
 
 func init() {
 	stateFileFunc = stateFileUnix
@@ -26,13 +35,13 @@ func statePath() string {
 	}
 	switch runtime.GOOS {
 	case "linux", "illumos", "solaris":
-		return "/var/lib/tailscale/tailscaled.state"
+		return fmt.Sprintf("/var/lib/%s/%s.state", program, daemonProgram) // __CYLONIX_MOD__
 	case "freebsd", "openbsd":
-		return "/var/db/tailscale/tailscaled.state"
+		return fmt.Sprintf("/var/db/%s/%s.state", program, daemonProgram) // __CYLONIX_MOD__
 	case "darwin":
-		return "/Library/Tailscale/tailscaled.state"
+		return fmt.Sprintf("/Library/%s/%s.state", darwinProgram, daemonProgram) // __CYLONIX_MOD__
 	case "aix":
-		return "/var/tailscale/tailscaled.state"
+		return fmt.Sprintf("/var/%s/%s.state", program, daemonProgram) // __CYLONIX_MOD__
 	default:
 		return ""
 	}
@@ -40,7 +49,7 @@ func statePath() string {
 
 func stateFileUnix() string {
 	if distro.Get() == distro.Gokrazy {
-		return "/perm/tailscaled/tailscaled.state"
+		return fmt.Sprintf("/perm/%s/%s.state", daemonProgram, daemonProgram) // __CYLONIX_MOD__
 	}
 	path := statePath()
 	if path == "" {
@@ -61,7 +70,7 @@ func stateFileUnix() string {
 	}
 
 	// For non-root users, fall back to $XDG_DATA_HOME/tailscale/*.
-	return filepath.Join(xdgDataHome(), "tailscale", "tailscaled.state")
+	return filepath.Join(xdgDataHome(), program, fmt.Sprintf("%s.state", daemonProgram)) // __CYLONIX_MOD__
 }
 
 func xdgDataHome() string {
@@ -72,7 +81,7 @@ func xdgDataHome() string {
 }
 
 func ensureStateDirPermsUnix(dir string) error {
-	if filepath.Base(dir) != "tailscale" {
+	if filepath.Base(dir) != program { // __CYLONIX_MOD__
 		return nil
 	}
 	fi, err := os.Stat(dir)

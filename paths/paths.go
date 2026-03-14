@@ -6,6 +6,7 @@
 package paths
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"tailscale.com/customize"
 	"tailscale.com/syncs"
 	"tailscale.com/version/distro"
 )
@@ -29,27 +31,27 @@ func DefaultTailscaledSocket() string {
 		return `\\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled`
 	}
 	if runtime.GOOS == "darwin" {
-		return "/var/run/tailscaled.socket"
+		return "/var/run/" + customize.ServiceName + ".socket" // __CYLONIX_MOD__
 	}
 	if runtime.GOOS == "plan9" {
-		return "/srv/tailscaled.sock"
+		return "/srv/" + customize.ServiceName + ".sock" // __CYLONIX_MOD__
 	}
 	switch distro.Get() {
 	case distro.Synology:
 		if distro.DSMVersion() == 6 {
-			return "/var/packages/Cylonix/etc/cylonixd.sock" // __CYLONIX_MOD__
+			return fmt.Sprintf("/var/packages/%s/etc/%s.sock", customize.ProgramName, customize.ServiceName) // __CYLONIX_MOD__
 		}
 		// DSM 7 (and higher? or failure to detect.)
-		return "/var/packages/Cylonix/var/cylonixd.sock" // __CYLONIX_MOD__
+		return fmt.Sprintf("/var/packages/%s/var/%s.sock", customize.ProgramName, customize.ServiceName) // __CYLONIX_MOD__
 	case distro.Gokrazy:
-		return "/perm/tailscaled/tailscaled.sock"
+		return fmt.Sprintf("/perm/%s/%s.sock", customize.ServiceName, customize.ServiceName) // __CYLONIX_MOD__
 	case distro.QNAP:
-		return "/tmp/tailscale/tailscaled.sock"
+		return fmt.Sprintf("/tmp/%s/%s.sock", customize.ServiceName, customize.ServiceName) // __CYLONIX_MOD__
 	}
 	if fi, err := os.Stat("/var/run"); err == nil && fi.IsDir() {
-		return "/var/run/cylonix/cylonixd.sock" // __CYLONIX_MOD__
+		return fmt.Sprintf("/var/run/%s/%s.sock", customize.LinuxProgramName, customize.ServiceName) // __CYLONIX_MOD__
 	}
-	return "tailscaled.sock"
+	return fmt.Sprintf("%s.sock", customize.ServiceName) // __CYLONIX_MOD__
 }
 
 // Overridden in init by OS-specific files.
@@ -131,7 +133,7 @@ func LegacyStateFilePath() string {
 func GetWindowsProgramName() (name, capitalized string) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "cylonix", "Cylonix"
+		return customize.WindowsProgramName, customize.WindowsCapitalizedProgramName
 	}
 	baseName := filepath.Base(exe)
 	name = strings.TrimSuffix(baseName, filepath.Ext(baseName))

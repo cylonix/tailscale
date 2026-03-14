@@ -29,6 +29,7 @@ import (
 
 	"tailscale.com/cmd/tailscaled/childproc"
 	"tailscale.com/control/controlclient"
+	"tailscale.com/customize"
 	"tailscale.com/envknob"
 	"tailscale.com/feature"
 	"tailscale.com/feature/buildfeatures"
@@ -72,7 +73,7 @@ func defaultTunName() string {
 	case "openbsd":
 		return "tun"
 	case "windows":
-		return "Tailscale"
+		return customize.WindowsCapitalizedProgramName // __CYLONIX_MOD__
 	case "darwin":
 		// "utun" is recognized by wireguard-go/tun/tun_darwin.go
 		// as a magic value that uses/creates any free number.
@@ -85,10 +86,10 @@ func defaultTunName() string {
 		if buildfeatures.HasSynology && buildfeatures.HasNetstack && distro.Get() == distro.Synology {
 			// Try TUN, but fall back to userspace networking if needed.
 			// See https://github.com/tailscale/tailscale-synology/issues/35
-			return "cylonix0,userspace-networking" // __CYLONIX_MOD__
+			return fmt.Sprintf("%s,userspace-networking", customize.DefaultTunnelName) // __CYLONIX_MOD__
 		}
 	}
-	return "tailscale0"
+	return customize.DefaultTunnelName // __CYLONIX_MOD__
 }
 
 // defaultPort returns the default UDP port to listen on for disco+wireguard.

@@ -104,7 +104,7 @@ pushspk: spk ## Push and install synology package on ${SYNO_HOST} host
 QNAP_ARCH ?= x86_64
 qpkg: ## Build QNAP package for ${QNAP_ARCH} architecture
 	./tool/go run ./cmd/dist build cylonix-qnap/${QNAP_ARCH}
-qpkg-all: ## Build QNAP packages for all architectures
+qpkgall: ## Build QNAP packages for all architectures
 	./tool/go run ./cmd/dist build cylonix-qnap
 
 .PHONY: check-image-repo
