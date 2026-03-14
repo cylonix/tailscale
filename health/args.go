@@ -36,4 +36,11 @@ const (
 	// ArgServerName provides a Warnable with comma delimited list of the hostname of the servers involved in the unhealthy state.
 	// If no nameservers were available to query, this will be an empty string.
 	ArgDNSServers Arg = "dns-servers"
+
+	// __BEGIN_CYLONIX_ADD__
+	// ArgTag provides a Warnable with a tag to identify the source of the
+	// unhealthy state. This is used when there are multiple sources of the same
+	// type of unhealthy state and we want to distinguish between them in the UI.
+	ArgTag Arg = "tag"
+	// __END_CYLONIX_ADD__
 )

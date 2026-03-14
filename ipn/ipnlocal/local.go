@@ -589,6 +589,9 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 	b.e.SetJailedFilter(noneFilter)
 
 	b.setTCPPortsIntercepted(nil)
+	// CYLONIX_ADD: initialize the UDP intercept hook to a no-op until the
+	// l2relay manager activates port-specific filters via SetUDPPortInterceptor.
+	b.shouldInterceptUDPPortAtomic.Store(func(uint16) bool { return false })
 
 	b.e.SetStatusCallback(b.setWgengineStatus)
 
@@ -1094,7 +1097,9 @@ func (b *LocalBackend) onHealthChange(change health.Change) {
 		if us == nil {
 			b.logf("health(warnable=%s): ok", w.Code)
 		} else {
-			b.logf("health(warnable=%s): error: %s", w.Code, us.Text)
+			// CYLONIX_MOD: include the unhealthy state's Args slice when
+			// logging so any extra context the warning carries is captured.
+			b.logf("health(warnable=%s): error: %s %v", w.Code, us.Text, us.Args)
 		}
 	}
 
@@ -3802,6 +3807,10 @@ func (b *LocalBackend) setAtomicValuesFromPrefsLocked(p ipn.PrefsView) {
 		if f, ok := hookServeClearVIPServicesTCPPortsInterceptedLocked.GetOk(); ok {
 			f(b)
 		}
+		// CYLONIX_ADD: also reset the UDP intercept hook to a no-op when
+		// prefs become invalid so a stale port table doesn't survive a
+		// profile change.
+		b.shouldInterceptUDPPortAtomic.Store(func(uint16) bool { return false })
 		b.lastServeConfJSON = mem.B(nil)
 		b.serveConfig = ipn.ServeConfigView{}
 	} else {
@@ -7386,7 +7395,11 @@ func (b *LocalBackend) ShouldInterceptTCPPort(port uint16) bool {
 
 // __BEGIN_CYLONIX_ADD__
 func (b *LocalBackend) ShouldInterceptUDPPort(port uint16) bool {
-	return b.shouldInterceptUDPPortAtomic.Load()(port)
+	f := b.shouldInterceptUDPPortAtomic.Load()
+	if f == nil {
+		return false
+	}
+	return f(port)
 }
 
 // StoreTestFilter is a test-only helper that replaces filterAtomic directly

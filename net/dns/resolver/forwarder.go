@@ -1070,7 +1070,12 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		if len(resolvers) == 0 {
 			metricDNSFwdErrorNoUpstream.Add(1)
 			if f.acceptDNS {
-				f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: ""})
+				// CYLONIX_MOD: include a human-readable tag with the unhealthy
+				// state so health UI can show why DNS is unavailable.
+				f.health.SetUnhealthy(dnsForwarderFailing, health.Args{
+					health.ArgDNSServers: "",
+					health.ArgTag:        "no upstream resolvers set",
+				})
 			}
 			f.logf("no upstream resolvers set, returning SERVFAIL")
 
@@ -1172,7 +1177,13 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 							resolverAddrs = append(resolverAddrs, rr.name.Addr)
 						}
 						if f.acceptDNS {
-							f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: strings.Join(resolverAddrs, ",")})
+							// CYLONIX_MOD: tag the unhealthy state with the
+							// failure reason for easier triage.
+							f.health.SetUnhealthy(dnsForwarderFailing,
+								health.Args{
+									health.ArgDNSServers: strings.Join(resolverAddrs, ","),
+									health.ArgTag:        "all resolvers failed. ctx done with errors",
+								})
 						}
 					case responseChan <- res:
 						if f.verboseFwd {
@@ -1199,7 +1210,13 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 				resolverAddrs = append(resolverAddrs, rr.name.Addr)
 			}
 			if f.acceptDNS {
-				f.health.SetUnhealthy(dnsForwarderFailing, health.Args{health.ArgDNSServers: strings.Join(resolverAddrs, ",")})
+				// CYLONIX_MOD: same tag/reason annotation for the no-error
+				// timeout path.
+				f.health.SetUnhealthy(dnsForwarderFailing,
+					health.Args{
+						health.ArgDNSServers: strings.Join(resolverAddrs, ","),
+						health.ArgTag:        "all resolvers failed. ctx done without errors",
+					})
 			}
 			return fmt.Errorf("waiting for response or error from %v: %w", resolverAddrs, ctx.Err())
 		}
