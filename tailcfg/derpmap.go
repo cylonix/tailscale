@@ -200,6 +200,16 @@ type DERPXRay struct {
 	RealityShortID     string `json:"realityShortId,omitempty"`
 	RealityFingerprint string `json:"realityFingerprint,omitempty"`
 	RealitySpiderX     string `json:"realitySpiderX,omitempty"`
+	// XHTTPMode controls the XHTTP upload mode. When empty, xray-core
+	// auto-selects "stream-one" when REALITY is in use (our transport).
+	// stream-one uses a single long-lived POST whose response body is the
+	// bidirectional data stream — required for DERP's HTTP upgrade to work.
+	// "packet-up" is incompatible: it pre-establishes a separate GET stream
+	// for downloads before any writes, so the DERP HTTP upgrade response
+	// never arrives (closed pipe). Set to "stream-up" for higher throughput
+	// in non-censored deployments where REALITY's TLS masquerading is not
+	// needed.
+	XHTTPMode string `json:"xhttpMode,omitempty"`
 }
 
 // Clone makes a deep copy of DERPXRay.

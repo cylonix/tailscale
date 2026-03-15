@@ -39,39 +39,73 @@ SHORT_ID=$(openssl rand -hex 4)
 # 6. Configure Xray Sidecar
 cat <<EOF | sudo tee /usr/local/etc/xray/config.json
 {
-  "inbounds": [{
-    "port": 443,
-    "protocol": "vless",
-    "settings": {
-      "clients": [{ "id": "$UUID" }],
-      "decryption": "none"
-    },
-    "streamSettings": {
-      "network": "xhttp",
-      "security": "reality",
-      "realitySettings": {
-        "show": false,
-        "dest": "www.microsoft.com:443",
-        "serverNames": ["www.microsoft.com"],
-        "xver": 0,
-        "privateKey": "$PRIVATE_KEY",
-        "shortIds": ["$SHORT_ID"]
+  "inbounds": [
+    {
+      "tag": "reality-in",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "$UUID" }],
+        "decryption": "none"
       },
-      "xhttpSettings": {
-        "mode": "stream-up",
-        "host": "www.microsoft.com",
-        "path": "/cylonix-derp-tunnel",
-        "scStreamUpServerSecs": "3600-7200",
-        "scMinPostsIntervalMs": 0
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "www.microsoft.com:443",
+          "serverNames": ["www.microsoft.com"],
+          "xver": 0,
+          "privateKey": "$PRIVATE_KEY",
+          "shortIds": ["$SHORT_ID"]
+        },
+        "xhttpSettings": {
+          "mode": "auto",
+          "host": "www.microsoft.com",
+          "path": "/cylonix-derp-tunnel",
+          "scStreamUpServerSecs": "5-10"
+        }
+      }
+    },
+    {
+      "tag": "cover-80",
+      "port": 80,
+      "listen": "0.0.0.0",
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "www.microsoft.com",
+        "port": 80,
+        "network": "tcp"
       }
     }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {
-      "redirect": "127.0.0.1:8080"
+  ],
+  "outbounds": [
+    {
+      "tag": "derper",
+      "protocol": "freedom",
+      "settings": {
+        "redirect": "127.0.0.1:8080"
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
     }
-  }]
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["cover-80"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["reality-in"],
+        "outboundTag": "derper"
+      }
+    ]
+  }
 }
 EOF
 
@@ -90,13 +124,14 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-# 8. Firewall — block unsolicited incoming UDP but allow DNS.
+# 8. Firewall — keep cover TCP/80 reachable and block unsolicited incoming UDP.
 # REALITY needs to reach the dest host (www.microsoft.com:443) for its
 # fallback/authentication flow, which requires DNS resolution over UDP.
 # A blanket "iptables -A INPUT -p udp -j DROP" blocks DNS responses and
 # breaks the REALITY handshake (connection reset by peer).
 #
 # We need to allow:
+#   - TCP/80 so the cover listener can proxy plain HTTP to Microsoft
 #   - UDP on loopback (systemd-resolved uses 127.0.0.53 over UDP)
 #   - Established/related UDP (responses to outgoing DNS queries)
 # Then drop all other incoming UDP.
@@ -104,7 +139,7 @@ EOF
 # Note: The ts-input chain (from tailscaled) is processed first via
 # "-A INPUT -j ts-input".  Traffic that doesn't match ts-input rules
 # RETURNs to the main INPUT chain where our rules take effect.
-echo "Configuring iptables UDP rules..."
+echo "Configuring iptables cover + UDP rules..."
 
 # Remove any existing blanket UDP DROP to avoid duplicates
 while iptables -D INPUT -p udp -j DROP 2>/dev/null; do :; done
@@ -113,14 +148,17 @@ iptables -D INPUT -p udp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>
 # Remove old loopback rule if present
 iptables -D INPUT -i lo -p udp -j ACCEPT 2>/dev/null || true
 
-# Add rules in order after the ts-input jump:
+# Ensure TCP/80 remains reachable for the cover listener.
+iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
+
+# Add UDP rules in order after the ts-input jump:
 # 1. Allow all UDP on loopback (for systemd-resolved on 127.0.0.53)
 # 2. Allow established/related UDP (DNS responses from external resolvers)
 # 3. Drop everything else
 iptables -A INPUT -i lo -p udp -j ACCEPT
 iptables -A INPUT -p udp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p udp -j DROP
-echo "  ✓ iptables: incoming UDP blocked (loopback + DNS responses allowed)"
+echo "  ✓ iptables: TCP/80 allowed for cover traffic; incoming UDP blocked except loopback + DNS responses"
 
 # 9. Start Services
 sudo systemctl daemon-reload

@@ -126,7 +126,7 @@ sshintegrationtest: ## Run the SSH integration tests in various Docker container
 	echo "Testing on alpine:latest" && docker build --build-arg="BASE=alpine:latest" -t ssh-alpine-latest ssh/tailssh/testcontainers
 
 # __BEGIN_CYLONIX_ADD__
-.PHONY: l2relaytest-local l2relaytest-container l2relaytest-vm
+.PHONY: l2relaytest-local l2relaytest-container l2relaytest-vm xray-perf-test-vms
 l2relaytest-local: ## Run local userspace multi-node integration test (no containers/VMs)
 	./tool/go test ${L2TEST_FLAG} ./wgengine/netstack -run TestShouldProcessInbound/l2relay-peerapi-intercept-local-ip-without-process-local-ips -count=1
 	./tool/go test ${L2TEST_FLAG} ./ipn/l2relay -count=1
@@ -139,6 +139,12 @@ l2relaytest-container: ## Run a lighter container integration pass on one distro
 
 l2relaytest-vm: ## Run VM-based L2 integration test with mac-friendly defaults
 	PATH="$(PWD)/.tools/bin:$$PATH" ./tool/go test ${L2TEST_FLAG} ./tstest/integration/vms -run 'TestVML2DiscoveryRulesConnectivity|TestVML2RelayUDPInterceptE2E|TestVML2RelayNASShareE2E|TestVML2RelayMinecraftE2E' -count=1 --run-vm-tests --no-s3
+
+xray-perf-test-vms: ## Two-VM XRAY DERP throughput test (requires QEMU; downloads Ubuntu image on first run)
+	./scripts/run-xray-perf-vms.sh
+
+xray-perf-test-vms-clean: ## Delete cached VM disk images for xray-perf-test-vms
+	./scripts/run-xray-perf-vms.sh clean
 # __END_CYLONIX_ADD__
 
 help: ## Show this help

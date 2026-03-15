@@ -275,6 +275,16 @@ func (c *Client) dialNodeXRay(ctx context.Context, n *tailcfg.DERPNode) (net.Con
 	return &xrayDebugConn{Conn: conn, logf: c.logf}, nil
 }
 
+// XRayDialer returns a ContextDialer that dials through the embedded xray-core
+// VLESS+REALITY+XHTTP underlay for n. c is used for logging, netns bypass, and
+// xray instance caching. This is used by derpbench and similar test tools to
+// exercise the xray underlay without needing a separate xray SOCKS5 proxy process.
+func XRayDialer(c *Client, n *tailcfg.DERPNode) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return c.dialNodeXRay(ctx, n)
+	}
+}
+
 // xrayDebugConn wraps an xray connection to log unexpected read/write errors.
 // Expected errors during connection teardown (closed pipe after Close) are
 // suppressed to avoid noisy logs.
@@ -305,6 +315,26 @@ func (c *xrayDebugConn) Close() error {
 		return nil
 	}
 	return c.Conn.Close()
+}
+
+// xhttpModeForConfig returns the XHTTP upload mode to use in the xray-core
+// config. When mode is empty we return "" which lets xray-core auto-select:
+// with REALITY (our transport) it chooses "stream-one" — a single POST whose
+// response body is the bidirectional data stream. This is required for DERP's
+// HTTP upgrade to work: the upgrade request is written to the POST body and
+// the 101 response is read from the same HTTP response stream.
+//
+// "packet-up" is incompatible with this pattern: it pre-establishes a
+// separate GET stream for downloads before any writes occur, so the HTTP
+// upgrade response never reaches the reader (closed pipe).
+//
+// "stream-one" is also acceptable for censorship evasion: REALITY's TLS
+// masquerading hides the content, and a single POST+response is normal
+// HTTPS traffic from the GFW's perspective. Callers may pass "stream-up"
+// for higher throughput in non-censored deployments (a long-lived POST with
+// separate upload/download streams).
+func xhttpModeForConfig(mode string) string {
+	return strings.TrimSpace(mode)
 }
 
 func xrayTunnelPath(tunnel string) string {
@@ -374,6 +404,7 @@ func xrayConfigForNode(node *tailcfg.DERPNode, port xnet.Port, serverName, dialA
 
 	transport := conf.TransportProtocol("xhttp")
 	tunnelPath := xrayTunnelPath(xrayCfg.XHTTPTunnel)
+	xhttpMode := xhttpModeForConfig(xrayCfg.XHTTPMode)
 	stream := &conf.StreamConfig{
 		Network:  &transport,
 		Security: "reality",
@@ -394,7 +425,7 @@ func xrayConfigForNode(node *tailcfg.DERPNode, port xnet.Port, serverName, dialA
 			// which limits a single DERP relay connection to ~15-40 Mbps.
 			// stream-up eliminates the per-POST round-trip overhead and
 			// matches the server-side "stream-up" configuration.
-			Mode: "stream-up",
+			Mode: xhttpMode,
 		},
 	}
 
@@ -420,7 +451,7 @@ func xrayConfigForNode(node *tailcfg.DERPNode, port xnet.Port, serverName, dialA
 		dialAddr, fmt.Sprint(port),
 		xrayCfg.ClientUUID, xrayCfg.ServerPublicKey,
 		xrayCfg.XHTTPTunnel, shortID, fingerprint,
-		realityServerName, spiderX,
+		realityServerName, spiderX, xhttpMode,
 	}, "|")
 
 	dest := xnet.TCPDestination(xnet.ParseAddress(dialAddr), port)
