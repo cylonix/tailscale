@@ -156,8 +156,8 @@ generate: ## Generate code
 pin-github-actions:
 	./tool/go tool github.com/stacklok/frizbee actions .github/workflows
 
-# CYLONIX_ADD: l2relay test targets.
-.PHONY: l2relaytest-local l2relaytest-container l2relaytest-vm
+# CYLONIX_ADD: l2relay + xray-perf test targets.
+.PHONY: l2relaytest-local l2relaytest-container l2relaytest-vm xray-perf-test-vms xray-perf-test-vms-clean
 l2relaytest-local: ## Run local userspace multi-node integration test (no containers/VMs)
 	./tool/go test ${L2TEST_FLAG} ./wgengine/netstack -run TestShouldProcessInbound/l2relay-peerapi-intercept-local-ip-without-process-local-ips -count=1
 	./tool/go test ${L2TEST_FLAG} ./ipn/l2relay -count=1
@@ -170,6 +170,12 @@ l2relaytest-container: ## Run a lighter container integration pass on one distro
 
 l2relaytest-vm: ## Run VM-based L2 integration test with mac-friendly defaults
 	PATH="$(PWD)/.tools/bin:$$PATH" ./tool/go test ${L2TEST_FLAG} ./tstest/integration/vms -run 'TestVML2DiscoveryRulesConnectivity|TestVML2RelayUDPInterceptE2E|TestVML2RelayNASShareE2E|TestVML2RelayMinecraftE2E' -count=1 --run-vm-tests --no-s3
+
+xray-perf-test-vms: ## Two-VM XRAY DERP throughput test (requires QEMU; downloads Ubuntu image on first run)
+	./scripts/run-xray-perf-vms.sh
+
+xray-perf-test-vms-clean: ## Delete cached VM disk images for xray-perf-test-vms
+	./scripts/run-xray-perf-vms.sh clean
 
 help: ## Show this help
 	@echo ""
