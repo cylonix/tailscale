@@ -323,14 +323,53 @@ SCRIPT
 configure_lan "$VM1_SSH_PORT" "$VM1_MAC" "$VM1_LAN_IP"
 configure_lan "$VM2_SSH_PORT" "$VM2_MAC" "$VM2_LAN_IP"
 
-# Simulate WAN latency to expose the packet-up bottleneck.
-# packet-up sends one HTTP POST per 1400-byte DERP frame and waits for 200 OK;
-# at 100ms RTT the throughput ceiling is ~1400B/100ms ≈ 112 Kbps per frame —
-# matching the 15-40 Mbps observed in production (many frames in flight but still
-# RTT-gated).  stream-up uses a single long-lived POST with no per-chunk round-trip.
-# Without artificial delay the QEMU socket RTT is < 1ms and both modes look identical.
+# ── TCP congestion control ────────────────────────────────────────────────────
+# Default to BBR on both VMs for realistic server/client behaviour.
+# Override with TCP_CC=cubic (or any available cc) to test alternatives.
+TCP_CC="${TCP_CC:-bbr}"
+log "Setting TCP congestion control to '${TCP_CC}' on both VMs..."
+set_tcp_cc() {
+    local port="$1"
+    vm_ssh "$port" bash -s <<SCRIPT
+# Load tcp_bbr module if needed (Ubuntu 22.04 ships it but doesn't autoload).
+if [ "${TCP_CC}" = "bbr" ]; then
+    modprobe tcp_bbr 2>/dev/null || true
+fi
+# Verify the cc is available before setting it.
+if grep -qw "${TCP_CC}" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    sysctl -qw net.ipv4.tcp_congestion_control=${TCP_CC}
+    sysctl -qw net.core.default_qdisc=fq
+    echo "TCP cc: \$(sysctl -n net.ipv4.tcp_congestion_control)  qdisc: \$(sysctl -n net.core.default_qdisc)"
+else
+    echo "WARN: '${TCP_CC}' not available; available: \$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)"
+fi
+SCRIPT
+}
+set_tcp_cc "$VM1_SSH_PORT"
+set_tcp_cc "$VM2_SSH_PORT"
+
+# Simulate WAN conditions via tc netem on the VM-to-VM LAN interface.
+# Knobs (all one-way; RTT is 2× delay):
+#   WAN_DELAY_MS  — base one-way latency in ms            (default: 100)
+#   WAN_JITTER_MS — delay variation (±jitter, normal dist) (default: 0)
+#   WAN_LOSS_PCT  — random packet loss percentage           (default: 0)
+#
+# Example — cross-country worst-case:
+#   WAN_DELAY_MS=300 WAN_JITTER_MS=300 WAN_LOSS_PCT=5 ./scripts/run-xray-perf-vms.sh
 WAN_DELAY_MS="${WAN_DELAY_MS:-100}"
-log "Adding ${WAN_DELAY_MS}ms one-way LAN delay via tc netem (simulating WAN RTT=$(( WAN_DELAY_MS * 2 ))ms)..."
+WAN_JITTER_MS="${WAN_JITTER_MS:-0}"
+WAN_LOSS_PCT="${WAN_LOSS_PCT:-0}"
+
+# Build the netem parameter string from the knobs.
+_netem_params="${WAN_DELAY_MS}ms"
+[ "${WAN_JITTER_MS}" != "0" ] && _netem_params="${_netem_params} ${WAN_JITTER_MS}ms distribution normal"
+[ "${WAN_LOSS_PCT}"  != "0" ] && _netem_params="${_netem_params} loss ${WAN_LOSS_PCT}%"
+
+_netem_desc="delay=${WAN_DELAY_MS}ms"
+[ "${WAN_JITTER_MS}" != "0" ] && _netem_desc="${_netem_desc} jitter=±${WAN_JITTER_MS}ms"
+[ "${WAN_LOSS_PCT}"  != "0" ] && _netem_desc="${_netem_desc} loss=${WAN_LOSS_PCT}%"
+
+log "Adding one-way netem: ${_netem_desc}  (RTT≈$(( WAN_DELAY_MS * 2 ))ms simulated)"
 add_netem() {
     local port="$1" mac="$2"
     vm_ssh "$port" bash -s <<SCRIPT
@@ -339,8 +378,8 @@ IFACE=\$(ip link | awk -v mac="$mac" '
     /link\/ether/ { if (\$2 == mac) print iface }
 ')
 [ -z "\$IFACE" ] && { echo "WARN: can't find LAN iface for netem"; exit 0; }
-tc qdisc replace dev "\$IFACE" root netem delay ${WAN_DELAY_MS}ms
-echo "netem: \$IFACE delay ${WAN_DELAY_MS}ms"
+tc qdisc replace dev "\$IFACE" root netem delay ${_netem_params}
+echo "netem: \$IFACE ${_netem_desc}"
 SCRIPT
 }
 add_netem "$VM1_SSH_PORT" "$VM1_MAC"
@@ -519,7 +558,7 @@ CFGSCRIPT
 }
 
 # ── Run the throughput tests ──────────────────────────────────────────────────
-sep "DERP throughput tests (duration=${BENCH_DURATION}, RTT≈$(( WAN_DELAY_MS * 2 ))ms simulated)"
+sep "DERP throughput tests (duration=${BENCH_DURATION}, ${_netem_desc}, RTT≈$(( WAN_DELAY_MS * 2 ))ms, tcp_cc=${TCP_CC})"
 log "VM1=$VM1_LAN_IP (derper + xray server)   VM2=$VM2_LAN_IP (derpbench, embedded xray)"
 log ""
 
@@ -554,7 +593,7 @@ sep "Test complete"
 log ""
 log "Expected results:"
 log "  Test A (direct DERP)     : close to raw network speed"
-log "  Test B (xray packet-up)  : censorship-safe; RTT-limited (~1400B/$(( WAN_DELAY_MS * 2 ))ms)"
+log "  Test B (xray packet-up)  : censorship-safe; RTT-limited (~1400B/$(( WAN_DELAY_MS * 2 ))ms, ${_netem_desc})"
 log "  Test C (xray stream-up)  : higher throughput; more fingerprintable as a tunnel"
 log ""
 log "VM logs: ${WORK_DIR}/vm1.log  ${WORK_DIR}/vm2.log"

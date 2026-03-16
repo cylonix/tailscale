@@ -533,6 +533,15 @@ func (de *endpoint) addrForSendLocked(now mono.Time) (udpAddr, derpAddr netip.Ad
 	udpAddr = de.bestAddr.AddrPort
 
 	if udpAddr.IsValid() && !now.After(de.trustBestAddrUntil) {
+		// __BEGIN_CYLONIX_ADD__
+		// When ALWAYS_USE_DERP is set the UDP socket is never bound, so a
+		// cached bestAddr must not suppress the DERP address. Without this,
+		// discoPing never starts a DERP ping, the idle-closed DERP connection
+		// is never re-established, and all pings time out indefinitely.
+		if debugAlwaysDERP() {
+			return netip.AddrPort{}, de.derpAddr, false
+		}
+		// __END_CYLONIX_ADD__
 		return udpAddr, netip.AddrPort{}, false
 	}
 
@@ -626,6 +635,11 @@ func (de *endpoint) addrForPingSizeLocked(now mono.Time, size int) (udpAddr, der
 
 	if udpAddr.IsValid() && mtuOk {
 		if !now.After(de.trustBestAddrUntil) {
+			// __BEGIN_CYLONIX_ADD__
+			if debugAlwaysDERP() {
+				return netip.AddrPort{}, de.derpAddr
+			}
+			// __END_CYLONIX_ADD__
 			return udpAddr, netip.AddrPort{}
 		}
 		// We had a bestAddr with large enough MTU but it expired, so

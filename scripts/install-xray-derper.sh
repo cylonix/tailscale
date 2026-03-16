@@ -63,7 +63,7 @@ cat <<EOF | sudo tee /usr/local/etc/xray/config.json
           "mode": "auto",
           "host": "www.microsoft.com",
           "path": "/cylonix-derp-tunnel",
-          "scStreamUpServerSecs": "5-10"
+          "scStreamUpServerSecs": "3600-7200"
         }
       }
     },
@@ -148,8 +148,11 @@ iptables -D INPUT -p udp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>
 # Remove old loopback rule if present
 iptables -D INPUT -i lo -p udp -j ACCEPT 2>/dev/null || true
 
-# Ensure TCP/80 remains reachable for the cover listener.
-iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
+# Ensure TCP/443 (xray REALITY) and TCP/80 (cover listener) are reachable for both IPv4 and IPv6.
+iptables  -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables  -I INPUT 1 -p tcp --dport 443 -j ACCEPT
+iptables  -C INPUT -p tcp --dport 80  -j ACCEPT 2>/dev/null || iptables  -I INPUT 1 -p tcp --dport 80  -j ACCEPT
+ip6tables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || ip6tables -I INPUT 1 -p tcp --dport 443 -j ACCEPT
+ip6tables -C INPUT -p tcp --dport 80  -j ACCEPT 2>/dev/null || ip6tables -I INPUT 1 -p tcp --dport 80  -j ACCEPT
 
 # Add UDP rules in order after the ts-input jump:
 # 1. Allow all UDP on loopback (for systemd-resolved on 127.0.0.53)
