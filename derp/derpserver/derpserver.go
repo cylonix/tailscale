@@ -112,6 +112,22 @@ const (
 	// are trying to send interleaved with each other and
 	// then disables all of them.
 	disableFighters
+
+	// __BEGIN_CYLONIX_ADD__
+	// keepFirstActive is a dupPolicy for intentional parallel connections
+	// (e.g. multiple xray underlay TCP streams from the same node). The
+	// first registered connection is always the active receiver; additional
+	// connections are allowed to send but do NOT steal the active slot.
+	// When the primary disconnects the next-oldest secondary takes over.
+	keepFirstActive
+
+	// roundRobinActive is a dupPolicy for fully bidirectional parallel
+	// connections. Incoming packets destined for a key are distributed
+	// round-robin across all registered connections for that key, so N
+	// parallel xray TCP streams each carry ~1/N of the receive traffic.
+	// Any connection may send without stealing the delivery slot.
+	roundRobinActive
+	// __END_CYLONIX_ADD__
 )
 
 // packetKind is the kind of packet being sent through DERP
@@ -299,6 +315,14 @@ type dupClientSet struct {
 	// removed. When a member of set is removed, the same
 	// element(s) are removed from sendHistory.
 	sendHistory []*sclient
+
+	// __BEGIN_CYLONIX_ADD__
+	// conns is an ordered slice of all connections in set, maintained
+	// in registration order for deterministic round-robin delivery.
+	conns []*sclient
+	// rrIdx is the round-robin counter for roundRobinActive delivery.
+	rrIdx atomic.Uint32
+	// __END_CYLONIX_ADD__
 }
 
 func (s *clientSet) pickActiveClient() *sclient {
@@ -312,6 +336,35 @@ func (s *clientSet) pickActiveClient() *sclient {
 	return nil
 }
 
+// __BEGIN_CYLONIX_ADD__
+
+// pickDeliveryClient returns the sclient to deliver an incoming packet to.
+// For roundRobinActive policy it distributes across all registered connections
+// in round-robin order; otherwise it falls back to activeClient.
+func (cs *clientSet) pickDeliveryClient(policy dupPolicy) *sclient {
+	if policy != roundRobinActive {
+		return cs.activeClient.Load()
+	}
+	d := cs.dup
+	if d == nil {
+		return cs.activeClient.Load()
+	}
+	n := uint32(len(d.conns))
+	if n == 0 {
+		return cs.activeClient.Load()
+	}
+	start := d.rrIdx.Add(1)
+	for i := uint32(0); i < n; i++ {
+		c := d.conns[(start+i)%n]
+		if !c.isDisabled.Load() {
+			return c
+		}
+	}
+	return nil
+}
+
+// __END_CYLONIX_ADD__
+
 // removeClient removes c from s and reports whether it was in s
 // to begin with.
 func (s *dupClientSet) removeClient(c *sclient) bool {
@@ -323,6 +376,15 @@ func (s *dupClientSet) removeClient(c *sclient) bool {
 	if len(s.set) == n {
 		return false
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	for i, sc := range s.conns {
+		if sc == c {
+			s.conns = append(s.conns[:i], s.conns[i+1:]...)
+			break
+		}
+	}
+	// __END_CYLONIX_ADD__
 
 	trim := s.sendHistory[:0]
 	for _, v := range s.sendHistory {
@@ -519,6 +581,21 @@ func (s *Server) SetTCPWriteTimeout(d time.Duration) {
 	s.tcpWriteTimeout = d
 }
 
+// __BEGIN_CYLONIX_ADD__
+
+// SetParallelClients enables the roundRobinActive policy which allows a node
+// to hold multiple simultaneous connections to this server (e.g. parallel
+// xray underlay TCP streams). Incoming packets are distributed round-robin
+// across all registered connections for the key, enabling full bidirectional
+// parallelism.
+func (s *Server) SetParallelClients(v bool) {
+	if v {
+		s.dupPolicy = roundRobinActive
+	}
+}
+
+// __END_CYLONIX_ADD__
+
 // HasMeshKey reports whether the server is configured with a mesh key.
 func (s *Server) HasMeshKey() bool { return !s.meshKey.IsZero() }
 
@@ -704,6 +781,9 @@ func (s *Server) registerClient(c *sclient) {
 			set:         set.Of(c, was),
 			last:        c,
 			sendHistory: []*sclient{was},
+			// __BEGIN_CYLONIX_ADD__
+			conns: []*sclient{was, c},
+			// __END_CYLONIX_ADD__
 		}
 		cs.dup = dup
 		c.debugLogf("register duplicate client")
@@ -713,10 +793,19 @@ func (s *Server) registerClient(c *sclient) {
 		dup.set.Add(c)
 		dup.last = c
 		dup.sendHistory = append(dup.sendHistory, c)
+		// __BEGIN_CYLONIX_ADD__
+		dup.conns = append(dup.conns, c)
+		// __END_CYLONIX_ADD__
 		c.debugLogf("register another duplicate client")
 	}
 
-	cs.activeClient.Store(c)
+	// __BEGIN_CYLONIX_MOD__
+	// Under keepFirstActive/roundRobinActive the first connection always
+	// holds activeClient; new connections join the dup set without displacing it.
+	if was == nil || (s.dupPolicy != keepFirstActive && s.dupPolicy != roundRobinActive) {
+		cs.activeClient.Store(c)
+	}
+	// __END_CYLONIX_MOD__
 
 	if _, ok := s.clientsMesh[c.key]; !ok {
 		s.clientsMesh[c.key] = nil // just for varz of total users in cluster
@@ -1163,7 +1252,9 @@ func (c *sclient) handleFrameForwardPacket(ft derp.FrameType, fl uint32) error {
 	s.mu.Lock()
 	if set, ok := s.clients[dstKey]; ok {
 		dstLen = set.Len()
-		dst = set.activeClient.Load()
+		// __BEGIN_CYLONIX_MOD__
+		dst = set.pickDeliveryClient(s.dupPolicy)
+		// __END_CYLONIX_MOD__
 	}
 	s.mu.Unlock()
 
@@ -1203,7 +1294,9 @@ func (c *sclient) handleFrameSendPacket(ft derp.FrameType, fl uint32) error {
 	s.mu.Lock()
 	if set, ok := s.clients[dstKey]; ok {
 		dstLen = set.Len()
-		dst = set.activeClient.Load()
+		// __BEGIN_CYLONIX_MOD__
+		dst = set.pickDeliveryClient(s.dupPolicy)
+		// __END_CYLONIX_MOD__
 	}
 	if dst == nil && dstLen < 1 {
 		fwd = s.clientsMesh[dstKey]
@@ -1480,6 +1573,12 @@ func (s *Server) noteClientActivity(c *sclient) {
 	if s.dupPolicy == lastWriterIsActive {
 		dup.last = c
 		cs.activeClient.Store(c)
+	// __BEGIN_CYLONIX_ADD__
+	} else if s.dupPolicy == keepFirstActive || s.dupPolicy == roundRobinActive {
+		// Secondary connections are allowed to send but must not displace
+		// the primary receiver slot. Only update dup.last for tracking.
+		dup.last = c
+	// __END_CYLONIX_ADD__
 	} else if dup.last == nil {
 		// If we didn't have a primary, let the current
 		// speaker be the primary.

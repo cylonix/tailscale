@@ -116,7 +116,7 @@ Description=Cylonix DERP Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/derper -hostname $derperIP -a :8080 -http-port 8081
+ExecStart=/usr/local/bin/derper -hostname $derperIP -a :8080 -http-port 8081 -allow-parallel-clients
 Restart=on-failure
 User=root
 

@@ -12,12 +12,14 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/tailscale/wireguard-go/conn"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
+	"tailscale.com/envknob"
 	"tailscale.com/health"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/netcheck"
@@ -120,7 +122,54 @@ type activeDerp struct {
 	// It is always non-nil and initialized to a non-zero Time.
 	lastWrite  *time.Time
 	createTime time.Time
+	// __BEGIN_CYLONIX_ADD__
+	// extraConns holds N-1 additional xray connections for this region (N from
+	// xrayConnCountForRegion). Each runs both runDerpReader and runDerpWriter.
+	extraConns []*activeDerpWriter
+	// writeIdx is used for round-robin dispatch across primary + extras.
+	// Stored as a pointer so copies of activeDerp share the same counter.
+	writeIdx *atomic.Uint32
+	// __END_CYLONIX_ADD__
 }
+
+// __BEGIN_CYLONIX_ADD__
+
+// activeDerpWriter is a write-only auxiliary DERP connection used alongside
+// the primary activeDerp connection to fan writes across multiple independent
+// xray TCP tunnels.
+type activeDerpWriter struct {
+	c         *derphttp.Client
+	writeCh   chan<- derpWriteRequest
+	lastWrite *time.Time
+}
+
+const derpXRayConnCountDefault = 8
+
+// derpXRayConnCount is an envknob override for the number of parallel xray
+// connections per region. 0 means use the DERP map value or the default (8).
+// Set TS_DERP_XRAY_CONN_COUNT=1 to force single-connection mode.
+var derpXRayConnCount = envknob.RegisterInt("TS_DERP_XRAY_CONN_COUNT")
+
+// xrayConnCountForRegion returns the number of parallel xray TCP connections
+// to open for regionID. Priority: envknob > DERPXRay.ConnCount > default (8).
+func (c *Conn) xrayConnCountForRegion(regionID int) int {
+	if n := derpXRayConnCount(); n > 0 {
+		return n
+	}
+	dm := c.derpMapAtomic.Load()
+	if dm != nil {
+		if region, ok := dm.Regions[regionID]; ok {
+			for _, node := range region.Nodes {
+				if node.XRay != nil && node.XRay.ConnCount > 0 {
+					return node.XRay.ConnCount
+				}
+			}
+		}
+	}
+	return derpXRayConnCountDefault
+}
+
+// __END_CYLONIX_ADD__
 
 var (
 	pickDERPFallbackForTests func() int
@@ -384,6 +433,18 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 		// __END_CYLONIX_ADD__
 		*ad.lastWrite = time.Now()
 		c.setPeerLastDerpLocked(peer, regionID, regionID)
+		// __BEGIN_CYLONIX_ADD__
+		// Round-robin across extra write-only connections when present.
+		if ad.writeIdx != nil && len(ad.extraConns) > 0 {
+			total := uint32(1 + len(ad.extraConns))
+			idx := ad.writeIdx.Add(1) % total
+			if idx > 0 {
+				ew := ad.extraConns[idx-1]
+				*ew.lastWrite = time.Now()
+				return ew.writeCh
+			}
+		}
+		// __END_CYLONIX_ADD__
 		return ad.writeCh
 	}
 
@@ -504,6 +565,49 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 			c.derpActiveFunc()
 		}
 	}()
+
+	// __BEGIN_CYLONIX_ADD__
+	// For xray-enabled regions, create additional write-only connections to
+	// fan writes across multiple independent xray TCP tunnels.
+	if c.regionHasXRayUnderlay(regionID) {
+		n := c.xrayConnCountForRegion(regionID)
+		for i := 1; i < n; i++ {
+			ewDC := derphttp.NewRegionClient(c.privateKey, c.logf, c.netMon, func() *tailcfg.DERPRegion {
+				if c.connCtx.Err() != nil {
+					return nil
+				}
+				derpMap := c.derpMapAtomic.Load()
+				if derpMap == nil {
+					return nil
+				}
+				return derpMap.Regions[regionID]
+			})
+			ewDC.HealthTracker = c.health
+			ewDC.SetCanAckPings(true)
+			ewDC.NotePreferred(false) // secondaries are never the home connection
+			ewDC.SetAddressFamilySelector(derpAddrFamSelector{c})
+			ewDC.DNSCache = dnscache.Get()
+
+			ewCh := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop())
+			ewLastWrite := new(time.Time)
+			*ewLastWrite = time.Now()
+			ew := &activeDerpWriter{
+				c:         ewDC,
+				writeCh:   ewCh,
+				lastWrite: ewLastWrite,
+			}
+			ad.extraConns = append(ad.extraConns, ew)
+			wg.Add(2) // reader + writer goroutines
+			go c.runDerpReader(ctx, regionID, ewDC, wg, startGate)
+			go c.runDerpWriter(ctx, ewDC, ewCh, wg, startGate)
+		}
+		if len(ad.extraConns) > 0 {
+			ad.writeIdx = new(atomic.Uint32)
+		}
+		c.activeDerp[regionID] = ad // store back with updated extraConns/writeIdx
+		c.logf("magicsock: derp-%d: created %d extra xray write connections", regionID, len(ad.extraConns))
+	}
+	// __END_CYLONIX_ADD__
 
 	return ad.writeCh
 }
@@ -742,6 +846,7 @@ func (c *Conn) runDerpWriter(ctx context.Context, dc *derphttp.Client, ch <-chan
 	}
 }
 
+
 func (c *connBind) receiveDERP(buffs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 	if s := c.Conn.health.ReceiveFuncStats(health.ReceiveDERP); s != nil {
 		s.Enter()
@@ -952,6 +1057,12 @@ func (c *Conn) closeDerpLocked(regionID int, why string) {
 		c.logf("magicsock: closing connection to derp-%v (%v), age %v", regionID, why, time.Since(ad.createTime).Round(time.Second))
 		go ad.c.Close()
 		ad.cancel()
+		// __BEGIN_CYLONIX_ADD__
+		// Cancel all write-only auxiliary connections for this region.
+		for _, ew := range ad.extraConns {
+			go ew.c.Close()
+		}
+		// __END_CYLONIX_ADD__
 		delete(c.activeDerp, regionID)
 		metricNumDERPConns.Set(int64(len(c.activeDerp)))
 	}
@@ -999,7 +1110,16 @@ func (c *Conn) cleanStaleDerp() {
 		if i == c.myDerp {
 			continue
 		}
-		if ad.lastWrite.Before(tooOld) {
+		// __BEGIN_CYLONIX_ADD__
+		// Track the most recent write across primary and any extra connections.
+		lastWrite := *ad.lastWrite
+		for _, ew := range ad.extraConns {
+			if ewt := *ew.lastWrite; ewt.After(lastWrite) {
+				lastWrite = ewt
+			}
+		}
+		// __END_CYLONIX_ADD__
+		if lastWrite.Before(tooOld) { // __CYLONIX_MOD__ (was: ad.lastWrite.Before)
 			c.closeDerpLocked(i, "idle")
 			metricDERPStaleCleaned.Add(1)
 			dirty = true

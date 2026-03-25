@@ -236,6 +236,11 @@ type DERPXRay struct {
 	// in non-censored deployments where REALITY's TLS masquerading is not
 	// needed.
 	XHTTPMode string `json:"xhttpMode,omitempty"`
+	// ConnCount is the number of parallel xray TCP connections the client
+	// should maintain per region. 0 means use the client default (8).
+	// Set to 1 to disable parallelism. Values > 1 require the server to
+	// be started with -allow-parallel-clients.
+	ConnCount int `json:"connCount,omitempty"`
 }
 
 // Clone makes a deep copy of DERPXRay.
