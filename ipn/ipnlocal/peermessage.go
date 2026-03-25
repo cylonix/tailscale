@@ -27,6 +27,7 @@ type PeerMessage struct {
 	CreatedAt       string         `json:"created_at"`
 	ApprovalID      string         `json:"approval_id,omitempty"`
 	ApprovalActions []any          `json:"approval_actions,omitempty"`
+	MenuOptions     []any          `json:"menu_options,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
