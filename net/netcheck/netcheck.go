@@ -251,10 +251,10 @@ type Client struct {
 	resolver *dnscache.Resolver    // only set if UseDNSCache is true
 
 	// __BEGIN_CYLONIX_ADD__
-	// xrayProbeMu guards xrayProbeClient. It is separate from mu to avoid
+	// xrayProbeMu guards xrayProbeClients. It is separate from mu to avoid
 	// holding the main lock during slow xray dial operations.
 	xrayProbeMu     sync.Mutex
-	xrayProbeClient *derphttp.Client // cached derphttp client for xray HTTPS probes
+	xrayProbeClients map[int]*derphttp.Client // one cached derphttp.Client per xray region ID
 	// __END_CYLONIX_ADD__
 }
 
@@ -293,26 +293,32 @@ func (c *Client) vlogf(format string, a ...any) {
 }
 
 // __BEGIN_CYLONIX_ADD__
-// getXRayProbeClient returns a cached derphttp.Client for xray HTTPS probes.
-// The client (and its underlying xray-core instance) is kept alive across
-// probe cycles so that the XHTTP connection pool is reused, avoiding the
-// full REALITY+TLS handshake on every netcheck cycle.
-func (c *Client) getXRayProbeClient() *derphttp.Client {
+// getXRayProbeClient returns a cached derphttp.Client for xray HTTPS probes
+// for the given region ID. Each xray region gets its own client so that
+// concurrent probes for different regions don't share a single xray-core
+// Instance — sharing one instance caused concurrent probes with different
+// configs to invalidate each other's xray tunnel (closed pipe errors).
+func (c *Client) getXRayProbeClient(regionID int) *derphttp.Client {
 	c.xrayProbeMu.Lock()
 	defer c.xrayProbeMu.Unlock()
-	if c.xrayProbeClient == nil {
-		c.xrayProbeClient = derphttp.NewNetcheckClient(c.logf, c.NetMon)
+	if c.xrayProbeClients == nil {
+		c.xrayProbeClients = make(map[int]*derphttp.Client)
 	}
-	return c.xrayProbeClient
+	dc, ok := c.xrayProbeClients[regionID]
+	if !ok {
+		dc = derphttp.NewNetcheckClient(c.logf, c.NetMon)
+		c.xrayProbeClients[regionID] = dc
+	}
+	return dc
 }
 
-// closeXRayProbeClient closes the cached xray probe client, if any.
-func (c *Client) closeXRayProbeClient() {
+// closeXRayProbeClients closes all cached xray probe clients, if any.
+func (c *Client) closeXRayProbeClients() {
 	c.xrayProbeMu.Lock()
 	defer c.xrayProbeMu.Unlock()
-	if c.xrayProbeClient != nil {
-		c.xrayProbeClient.Close()
-		c.xrayProbeClient = nil
+	for id, dc := range c.xrayProbeClients {
+		dc.Close()
+		delete(c.xrayProbeClients, id)
 	}
 }
 // __END_CYLONIX_ADD__
@@ -1262,7 +1268,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	// latency numbers.
 	var dc *derphttp.Client
 	if isXRay {
-		dc = c.getXRayProbeClient()
+		dc = c.getXRayProbeClient(reg.RegionID)
 		// Do NOT defer dc.Close() — we keep it alive across probes.
 	} else {
 		dc = derphttp.NewNetcheckClient(c.logf, c.NetMon)

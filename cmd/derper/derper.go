@@ -70,6 +70,10 @@ var (
 	verifyClientURL = flag.String("verify-client-url", "", "if non-empty, an admission controller URL for permitting client connections; see tailcfg.DERPAdmitClientRequest")
 	verifyFailOpen  = flag.Bool("verify-client-url-fail-open", true, "whether we fail open if --verify-client-url is unreachable")
 
+	// __BEGIN_CYLONIX_ADD__
+	allowParallelClients = flag.Bool("allow-parallel-clients", false, "allow multiple simultaneous connections per node key; enables parallel xray underlay TCP streams for higher throughput")
+	// __END_CYLONIX_ADD__
+
 	acceptConnLimit = flag.Float64("accept-connection-limit", math.Inf(+1), "rate limit for accepting new connection")
 	acceptConnBurst = flag.Int("accept-connection-burst", math.MaxInt, "burst limit for accepting new connection")
 
@@ -176,6 +180,9 @@ func main() {
 	s.SetVerifyClientURL(*verifyClientURL)
 	s.SetVerifyClientURLFailOpen(*verifyFailOpen)
 	s.SetTCPWriteTimeout(*tcpWriteTimeout)
+	// __BEGIN_CYLONIX_ADD__
+	s.SetParallelClients(*allowParallelClients)
+	// __END_CYLONIX_ADD__
 
 	if *meshPSKFile != "" {
 		b, err := os.ReadFile(*meshPSKFile)

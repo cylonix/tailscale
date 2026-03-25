@@ -501,6 +501,22 @@ derpbench_xray_flags() {
     echo "-xray-uuid $XRAY_UUID -xray-pubkey $XRAY_PUBKEY -xray-shortid $XRAY_SHORTID -xray-tunnel $TUNNEL_PATH -xray-sni $REALITY_SNI -xray-mode $mode"
 }
 
+reconfigure_vm1_derper() {
+    local extra_flags="$1"  # e.g. "-allow-parallel-clients" or ""
+    vm_ssh "$VM1_SSH_PORT" bash -s <<DERPERSCRIPT
+set -euo pipefail
+pkill -f 'derper.*:8080' 2>/dev/null || true
+sleep 1
+nohup /usr/local/bin/derper -a :8080 -http-port -1 -hostname 10.100.0.1 \
+    -stun=false $extra_flags \
+    >/var/log/derper.log 2>&1 &
+disown \$!
+sleep 1
+pgrep -a derper || { echo "ERROR: derper failed to start"; exit 1; }
+echo "VM1 derper restarted with flags: '$extra_flags'"
+DERPERSCRIPT
+}
+
 reconfigure_vm1_xray() {
     local mode="$1"  # "stream-up" or "packet-up"
     # Read the private key and other creds from the existing config on VM1, then
@@ -589,11 +605,28 @@ vm_ssh "$VM2_SSH_PORT" \
         $(derpbench_xray_flags "stream-up") \
         -d "$BENCH_DURATION"
 
+# ── Test D: DERP via xray stream-up + parallel connections ───────────────────
+XRAY_CONN_COUNT="${XRAY_CONN_COUNT:-2}"
+XRAY_RECV_COUNT="${XRAY_RECV_COUNT:-${XRAY_CONN_COUNT}}"
+sep "Test D: DERP via xray stream-up with ${XRAY_CONN_COUNT} senders + ${XRAY_RECV_COUNT} receivers (-allow-parallel-clients)"
+log "Restarting VM1 derper with -allow-parallel-clients..."
+reconfigure_vm1_derper "-allow-parallel-clients"
+# VM1 xray is already in stream-up mode from Test C.
+# shellcheck disable=SC2046
+vm_ssh "$VM2_SSH_PORT" \
+    /usr/local/bin/derpbench \
+        -server "http://$VM1_LAN_IP:8080/derp" \
+        $(derpbench_xray_flags "stream-up") \
+        -xray-conn-count "$XRAY_CONN_COUNT" \
+        -xray-recv-count "$XRAY_RECV_COUNT" \
+        -d "$BENCH_DURATION"
+
 sep "Test complete"
 log ""
 log "Expected results:"
-log "  Test A (direct DERP)     : close to raw network speed"
-log "  Test B (xray packet-up)  : censorship-safe; RTT-limited (~1400B/$(( WAN_DELAY_MS * 2 ))ms, ${_netem_desc})"
-log "  Test C (xray stream-up)  : higher throughput; more fingerprintable as a tunnel"
+log "  Test A (direct DERP)           : close to raw network speed"
+log "  Test B (xray packet-up)        : censorship-safe; RTT-limited (~1400B/$(( WAN_DELAY_MS * 2 ))ms, ${_netem_desc})"
+log "  Test C (xray stream-up)        : higher throughput; more fingerprintable as a tunnel"
+log "  Test D (stream-up + N conns)   : parallel xray TCP streams (send+recv); should beat Test C"
 log ""
 log "VM logs: ${WORK_DIR}/vm1.log  ${WORK_DIR}/vm2.log"

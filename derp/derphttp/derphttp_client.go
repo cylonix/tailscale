@@ -557,6 +557,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if err := req.Write(brw); err != nil {
 			if isXRay {
 				c.logf("derphttp: xray: req.Write failed: %v", err)
+				// __BEGIN_CYLONIX_ADD__
+				// The xray-core pool may have returned a stale stream.
+				// Reset the cached instance so the next dial does a
+				// fresh REALITY+XHTTP handshake instead of reusing it.
+				c.xrayInst.close()
+				// __END_CYLONIX_ADD__
 			}
 			return nil, 0, err
 		}
@@ -566,6 +572,9 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if err := brw.Flush(); err != nil {
 			if isXRay {
 				c.logf("derphttp: xray: brw.Flush failed: %v", err)
+				// __BEGIN_CYLONIX_ADD__
+				c.xrayInst.close()
+				// __END_CYLONIX_ADD__
 			}
 			return nil, 0, err
 		}
@@ -577,6 +586,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if err != nil {
 			if isXRay {
 				c.logf("derphttp: xray: http.ReadResponse failed: %v", err)
+				// __BEGIN_CYLONIX_ADD__
+				// The xray-core pool may have returned a stale stream.
+				// Reset the cached instance so the next dial does a
+				// fresh REALITY+XHTTP handshake instead of reusing it.
+				c.xrayInst.close()
+				// __END_CYLONIX_ADD__
 			}
 			return nil, 0, err
 		}
