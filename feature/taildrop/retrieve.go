@@ -11,12 +11,60 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/util/backoff"
 	"tailscale.com/util/set"
 )
+
+// __BEGIN_CYLONIX_ADD__
+const transferIDSidecarSuffix = ".cylonix-transfer-id"
+
+func (m *manager) transferIDSidecarPath(baseName string) (string, error) {
+	if m == nil || m.opts.Dir == "" {
+		return "", ErrNoTaildrop
+	}
+	path, err := joinDir(m.opts.Dir, baseName)
+	if err != nil {
+		return "", err
+	}
+	return path + transferIDSidecarSuffix, nil
+}
+
+func (m *manager) SetWaitingFileTransferID(baseName, transferID string) error {
+	if transferID == "" {
+		return nil
+	}
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(sidecarPath, []byte(strings.TrimSpace(transferID)), 0600)
+}
+
+func (m *manager) WaitingFileTransferID(baseName string) string {
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (m *manager) deleteWaitingFileTransferID(baseName string) {
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(sidecarPath)
+}
+
+// __END_CYLONIX_ADD__
 
 // HasFilesWaiting reports whether any files are buffered in [Handler.Dir].
 // This always returns false when [Handler.DirectFileMode] is false.
@@ -75,6 +123,11 @@ func (m *manager) WaitingFiles() ([]apitype.WaitingFile, error) {
 	}
 	var ret []apitype.WaitingFile
 	for _, name := range names {
+		// CYLONIX_ADD: hide our transferID sidecar files from the waiting
+		// file listing.
+		if strings.HasSuffix(name, transferIDSidecarSuffix) {
+			continue
+		}
 		if isPartialOrDeleted(name) {
 			continue
 		}
@@ -87,6 +140,9 @@ func (m *manager) WaitingFiles() ([]apitype.WaitingFile, error) {
 			continue
 		}
 		ret = append(ret, apitype.WaitingFile{
+			// CYLONIX_ADD: surface the persistent transfer ID so the peer
+			// message UI can correlate file events.
+			ID:   m.WaitingFileTransferID(name),
 			Name: name,
 			Size: fi.Size(),
 		})
@@ -104,6 +160,8 @@ func (m *manager) DeleteFile(baseName string) error {
 	if m.opts.DirectFileMode {
 		return errors.New("deletes not allowed in direct mode")
 	}
+	// CYLONIX_ADD: clean up the transferID sidecar when the file is deleted.
+	defer m.deleteWaitingFileTransferID(baseName)
 
 	var bo *backoff.Backoff
 	logf := m.opts.Logf
@@ -174,7 +232,7 @@ func (m *manager) OpenFile(baseName string) (rc io.ReadCloser, size int64, err e
 }
 
 // __BEGIN_CYLONIX_MOD__
-func (m *Manager) GetFilePath(baseName string) (path string, err error) {
+func (m *manager) GetFilePath(baseName string) (path string, err error) {
 	if m == nil || m.opts.Dir == "" {
 		return "", ErrNoTaildrop
 	}

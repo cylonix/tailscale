@@ -52,6 +52,9 @@ type FileTarget struct {
 }
 
 type WaitingFile struct {
+	// __BEGIN_CYLONIX_ADD__
+	ID string
+	// __END_CYLONIX_ADD__
 	Name string
 	Size int64
 }

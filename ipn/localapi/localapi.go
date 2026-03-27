@@ -1067,9 +1067,8 @@ func WriteErrorJSON(w http.ResponseWriter, err error) {
 // (serveFileTargets, serveFilePut, multipart upload streaming, progress
 // reporting, and the cylonix transferID plumbing) used to live here. In
 // v1.96.4 these moved into feature/taildrop/localapi.go. The cylonix
-// extensions (e.g. transferID propagation that the post-tag commits add)
-// will need to be re-applied to the feature/taildrop equivalents during
-// cherry-pick.
+// transferID plumbing (introduced by this commit) must be re-applied to
+// feature/taildrop's equivalents in a follow-up.
 
 func (h *Handler) serveSetDNS(w http.ResponseWriter, r *http.Request) {
 	if !h.PermitWrite {

@@ -613,9 +613,10 @@ func (h *peerAPIHandler) PeerCaps() tailcfg.PeerCapMap {
 
 // CYLONIX_NOTE: in v1.96.4 the peerAPIHandler.handlePeerPut function and the
 // approxSize helper have moved out of ipn/ipnlocal into the feature/taildrop
-// extension. Cylonix's only change here was to append the baseName to the
-// "invalid filename" HTTP error message; that small mod will need to be
-// re-applied to feature/taildrop's equivalent code path.
+// extension. The cylonix-specific bits (`X-Cylonix-Transfer-ID` header
+// plumbing into SetWaitingFileTransferID, plus the baseName-included
+// "invalid filename" HTTP error) need to be re-applied to feature/taildrop's
+// equivalent peerapi code path in a follow-up.
 
 func (h *peerAPIHandler) handleServeGoroutines(w http.ResponseWriter, r *http.Request) {
 	if !h.canDebug() {
