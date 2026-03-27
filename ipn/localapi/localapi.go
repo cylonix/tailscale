@@ -1863,6 +1863,11 @@ func (h *Handler) singleFilePut(
 		fail()
 		return false
 	}
+	// __BEGIN_CYLONIX_ADD__
+	if outgoingFile.ID != "" {
+		outReq.Header.Set("X-Cylonix-Transfer-ID", outgoingFile.ID)
+	}
+	// __END_CYLONIX_ADD__
 	// __BEGIN_CYLONIX_MOD__
 	// Don't set the content length as the declared size may be smaller due to a live
 	// file e.g. a log file.

@@ -740,6 +740,9 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 	case "PUT":
 		t0 := h.ps.b.clock.Now()
 		id := taildrop.ClientID(h.peerNode.StableID())
+		// __BEGIN_CYLONIX_ADD__
+		transferID := strings.TrimSpace(r.Header.Get("X-Cylonix-Transfer-ID"))
+		// __END_CYLONIX_ADD__
 
 		var offset int64
 		if rangeHdr := r.Header.Get("Range"); rangeHdr != "" {
@@ -753,6 +756,13 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		n, err := h.ps.taildrop.PutFile(taildrop.ClientID(fmt.Sprint(id)), baseName, r.Body, offset, r.ContentLength)
 		switch err {
 		case nil:
+			// __BEGIN_CYLONIX_ADD__
+			if transferID != "" {
+				if err := h.ps.taildrop.SetWaitingFileTransferID(baseName, transferID); err != nil {
+					h.logf("failed to persist transfer id for %q: %v", baseName, err)
+				}
+			}
+			// __END_CYLONIX_ADD__
 			d := h.ps.b.clock.Since(t0).Round(time.Second / 10)
 			h.logf("got put of %s in %v from %v/%v", approxSize(n), d, h.remoteAddr.Addr(), h.peerNode.ComputedName)
 			io.WriteString(w, "{}\n")

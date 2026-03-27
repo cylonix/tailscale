@@ -12,11 +12,59 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/logtail/backoff"
 )
+
+// __BEGIN_CYLONIX_ADD__
+const transferIDSidecarSuffix = ".cylonix-transfer-id"
+
+func (m *Manager) transferIDSidecarPath(baseName string) (string, error) {
+	if m == nil || m.opts.Dir == "" {
+		return "", ErrNoTaildrop
+	}
+	path, err := joinDir(m.opts.Dir, baseName)
+	if err != nil {
+		return "", err
+	}
+	return path + transferIDSidecarSuffix, nil
+}
+
+func (m *Manager) SetWaitingFileTransferID(baseName, transferID string) error {
+	if transferID == "" {
+		return nil
+	}
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(sidecarPath, []byte(strings.TrimSpace(transferID)), 0600)
+}
+
+func (m *Manager) WaitingFileTransferID(baseName string) string {
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (m *Manager) deleteWaitingFileTransferID(baseName string) {
+	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(sidecarPath)
+}
+
+// __END_CYLONIX_ADD__
 
 // HasFilesWaiting reports whether any files are buffered in [Handler.Dir].
 // This always returns false when [Handler.DirectFileMode] is false.
@@ -70,6 +118,11 @@ func (m *Manager) WaitingFiles() (ret []apitype.WaitingFile, err error) {
 	}
 	if err := rangeDir(m.opts.Dir, func(de fs.DirEntry) bool {
 		name := de.Name()
+		// __BEGIN_CYLONIX_ADD__
+		if strings.HasSuffix(name, transferIDSidecarSuffix) {
+			return true
+		}
+		// __END_CYLONIX_ADD__
 		if isPartialOrDeleted(name) || !de.Type().IsRegular() {
 			return true
 		}
@@ -80,6 +133,9 @@ func (m *Manager) WaitingFiles() (ret []apitype.WaitingFile, err error) {
 				return true
 			}
 			ret = append(ret, apitype.WaitingFile{
+				// __BEGIN_CYLONIX_ADD__
+				ID:   m.WaitingFileTransferID(filepath.Base(name)),
+				// __END_CYLONIX_ADD__
 				Name: filepath.Base(name),
 				Size: fi.Size(),
 			})
@@ -101,6 +157,8 @@ func (m *Manager) DeleteFile(baseName string) error {
 	if m.opts.DirectFileMode {
 		return errors.New("deletes not allowed in direct mode")
 	}
+	// __CYLONIX_ADD__
+	defer m.deleteWaitingFileTransferID(baseName)
 	path, err := joinDir(m.opts.Dir, baseName)
 	if err != nil {
 		return err
