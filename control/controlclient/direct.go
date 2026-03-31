@@ -273,12 +273,19 @@ func NewDirect(opts Options) (*Direct, error) {
 		opts.Logf = log.Printf
 	}
 
+	// __BEGIN_CYLONIX_MOD__
+	// Use a shorter TTL for the control DNS cache so stale entries from
+	// before an exit node change are refreshed faster. The fallback
+	// resolver (bootstrap DNS via DERP) uses SystemDial which is bound to
+	// the physical interface, so it works even when exit node DNS is down.
 	dnsCache := &dnscache.Resolver{
 		Forward:          dnscache.Get().Forward, // use default cache's forwarder
 		UseLastGood:      true,
 		LookupIPFallback: dnsfallback.MakeLookupFunc(opts.Logf, netMon),
 		Logf:             opts.Logf,
+		TTL:              2 * time.Minute, // shorter than default 10m to limit stale entries
 	}
+	// __END_CYLONIX_MOD__
 
 	httpc := opts.HTTPTestClient
 	if httpc == nil && runtime.GOOS == "js" {
@@ -382,12 +389,12 @@ func (c *Direct) Close() error {
 }
 
 // CYLONIX_ADD: ResetNoiseConnections closes all active noise connections,
-// forcing the next request to dial a new connection. This is useful when
-// the VPN configuration changes on mobile platforms (Android/iOS) and
-// existing connections may no longer route correctly. In v1.96.4 the
-// ts2021.Client does not expose a ResetConnections; closing the client
-// and clearing it has the equivalent effect because getNoiseClient will
-// re-create one on the next call.
+// flushes the DNS cache, and closes idle HTTP transport connections so the
+// next request dials fresh. This is useful when the VPN configuration
+// changes on mobile platforms (Android/iOS) and existing connections may
+// no longer route correctly. In v1.96.4 the ts2021.Client does not expose a
+// ResetConnections; closing the client and clearing it has the equivalent
+// effect because getNoiseClient will re-create one on the next call.
 func (c *Direct) ResetNoiseConnections() {
 	c.mu.Lock()
 	nc := c.noiseClient
@@ -396,6 +403,17 @@ func (c *Direct) ResetNoiseConnections() {
 	if nc != nil {
 		_ = nc.Close()
 	}
+	// Flush DNS cache to force fresh resolution of the controller host.
+	// Stale cached IPs may be unreachable after network/exit node changes.
+	if c.dnsCache != nil {
+		c.dnsCache.FlushCache()
+	}
+	// Close idle HTTP transport connections to prevent reusing broken
+	// connections from a previous network path.
+	if tr, ok := c.httpc.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	c.logf("control: reset noise connections, flushed DNS cache, and closed idle HTTP connections")
 }
 
 // SetHostinfo clones the provided Hostinfo and remembers it for the
