@@ -332,6 +332,19 @@ func (r *Resolver) lookupIP(ctx context.Context, host string) (ip, ip6 netip.Add
 	return ip, ip6, ips, nil
 }
 
+// __BEGIN_CYLONIX_ADD__
+
+// FlushCache clears all cached DNS entries, forcing fresh lookups on the
+// next call to LookupIP. This is useful when network configuration changes
+// (e.g. exit node enabled/disabled) may have invalidated cached results.
+func (r *Resolver) FlushCache() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ipCache = nil
+}
+
+// __END_CYLONIX_ADD__
+
 func (r *Resolver) addIPCache(host string, ip, ip6 netip.Addr, allIPs []netip.Addr, d time.Duration) {
 	if ip.IsPrivate() {
 		// Don't cache obviously wrong entries from captive portals.
