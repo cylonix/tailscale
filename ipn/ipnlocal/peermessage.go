@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 )
@@ -37,7 +40,15 @@ type PeerMessageTransportPayload struct {
 	ConversationID    string      `json:"conversation_id"`
 	ConversationTitle string      `json:"conversation_title,omitempty"`
 	Subtitle          string      `json:"subtitle,omitempty"`
+	DeliveryPolicy    string      `json:"delivery_policy,omitempty"`
 	Message           PeerMessage `json:"message"`
+}
+
+type PeerMessageSendResult struct {
+	Accepted       bool   `json:"accepted"`
+	Queued         bool   `json:"queued,omitempty"`
+	DeliveryStatus string `json:"delivery_status"`
+	MessageID      string `json:"message_id,omitempty"`
 }
 
 type PeerMessageEvent struct {
@@ -51,21 +62,90 @@ type PeerMessageEvent struct {
 
 var PeerMessageEventSink func(PeerMessageEvent) error
 
+const (
+	peerMessageDeliveryPolicyDrop  = "drop"
+	peerMessageDeliveryPolicyQueue = "queue"
+
+	peerMessageQueueStateStoreKey ipn.StateKey = "_peerMessageOutboundQueue"
+	peerMessageQueueTick                       = 30 * time.Second
+)
+
+type peerMessageQueueEntry struct {
+	PeerRef       string                      `json:"peer_ref"`
+	Payload       PeerMessageTransportPayload `json:"payload"`
+	QueuedAt      string                      `json:"queued_at"`
+	LastAttemptAt string                      `json:"last_attempt_at,omitempty"`
+	LastError     string                      `json:"last_error,omitempty"`
+	AttemptCount  int                         `json:"attempt_count"`
+}
+
+type peerMessageQueueWorker struct {
+	signal chan struct{}
+}
+
+var peerMessageQueueWorkers sync.Map
+
 func init() {
 	RegisterPeerAPIHandler("/v0/peer-message/message", handlePeerMessage)
 }
 
-func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payload PeerMessageTransportPayload) error {
+func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payload PeerMessageTransportPayload) (*PeerMessageSendResult, error) {
+	b.ensurePeerMessageQueueWorker()
 	nm := b.NetMap()
 	if nm == nil {
-		return fmt.Errorf("no network map available")
+		err := fmt.Errorf("no network map available")
+		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
+				return nil, enqueueErr
+			}
+			return &PeerMessageSendResult{
+				Accepted:       true,
+				Queued:         true,
+				DeliveryStatus: "pending",
+				MessageID:      payload.Message.ID,
+			}, nil
+		}
+		return nil, err
 	}
 
 	peer, err := resolvePeerByRef(nm, peerRef)
 	if err != nil {
-		return err
+		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
+				return nil, enqueueErr
+			}
+			return &PeerMessageSendResult{
+				Accepted:       true,
+				Queued:         true,
+				DeliveryStatus: "pending",
+				MessageID:      payload.Message.ID,
+			}, nil
+		}
+		return nil, err
 	}
 
+	if err := b.sendPeerMessageNow(ctx, nm, peer, peerRef, payload); err != nil {
+		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
+				return nil, enqueueErr
+			}
+			return &PeerMessageSendResult{
+				Accepted:       true,
+				Queued:         true,
+				DeliveryStatus: "pending",
+				MessageID:      payload.Message.ID,
+			}, nil
+		}
+		return nil, err
+	}
+	return &PeerMessageSendResult{
+		Accepted:       true,
+		DeliveryStatus: "delivered",
+		MessageID:      payload.Message.ID,
+	}, nil
+}
+
+func (b *LocalBackend) sendPeerMessageNow(ctx context.Context, nm *netmap.NetworkMap, peer tailcfg.NodeView, peerRef string, payload PeerMessageTransportPayload) error {
 	base := peerAPIBase(nm, peer)
 	if base == "" {
 		return fmt.Errorf("peer %q does not expose peerapi", peerRef)
@@ -102,6 +182,178 @@ func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payl
 		return fmt.Errorf("peerapi send failed: status=%d body=%s", resp.StatusCode, string(msg))
 	}
 	return nil
+}
+
+func normalizePeerMessageDeliveryPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "", peerMessageDeliveryPolicyDrop:
+		return peerMessageDeliveryPolicyDrop
+	case peerMessageDeliveryPolicyQueue:
+		return peerMessageDeliveryPolicyQueue
+	default:
+		return peerMessageDeliveryPolicyDrop
+	}
+}
+
+func (b *LocalBackend) ensurePeerMessageQueueWorker() {
+	worker := &peerMessageQueueWorker{
+		signal: make(chan struct{}, 1),
+	}
+	actual, loaded := peerMessageQueueWorkers.LoadOrStore(b, worker)
+	if loaded {
+		return
+	}
+	b.goTracker.Go(func() {
+		b.runPeerMessageQueueWorker(actual.(*peerMessageQueueWorker))
+	})
+}
+
+func (b *LocalBackend) runPeerMessageQueueWorker(worker *peerMessageQueueWorker) {
+	ticker := time.NewTicker(peerMessageQueueTick)
+	defer ticker.Stop()
+	defer peerMessageQueueWorkers.Delete(b)
+
+	_ = b.flushPeerMessageQueue(b.ctx)
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			_ = b.flushPeerMessageQueue(b.ctx)
+		case <-worker.signal:
+			_ = b.flushPeerMessageQueue(b.ctx)
+		}
+	}
+}
+
+func (b *LocalBackend) enqueuePeerMessage(peerRef string, payload PeerMessageTransportPayload, cause error) error {
+	entries, err := b.readPeerMessageQueue()
+	if err != nil {
+		return fmt.Errorf("read peerMessage queue: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	entries = append(entries, peerMessageQueueEntry{
+		PeerRef:       peerRef,
+		Payload:       payload,
+		QueuedAt:      now,
+		LastAttemptAt: now,
+		LastError:     cause.Error(),
+		AttemptCount:  1,
+	})
+	if err := b.writePeerMessageQueue(entries); err != nil {
+		return fmt.Errorf("write peerMessage queue: %w", err)
+	}
+	if worker, ok := peerMessageQueueWorkers.Load(b); ok {
+		select {
+		case worker.(*peerMessageQueueWorker).signal <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context) error {
+	entries, err := b.readPeerMessageQueue()
+	if err != nil || len(entries) == 0 {
+		return err
+	}
+
+	nm := b.NetMap()
+	if nm == nil {
+		return nil
+	}
+
+	remaining := make([]peerMessageQueueEntry, 0, len(entries))
+	for _, entry := range entries {
+		peer, err := resolvePeerByRef(nm, entry.PeerRef)
+		if err != nil {
+			entry.LastAttemptAt = time.Now().UTC().Format(time.RFC3339Nano)
+			entry.LastError = err.Error()
+			entry.AttemptCount++
+			remaining = append(remaining, entry)
+			continue
+		}
+		if err := b.sendPeerMessageNow(ctx, nm, peer, entry.PeerRef, entry.Payload); err != nil {
+			entry.LastAttemptAt = time.Now().UTC().Format(time.RFC3339Nano)
+			entry.LastError = err.Error()
+			entry.AttemptCount++
+			remaining = append(remaining, entry)
+			continue
+		}
+		_ = emitPeerMessageDeliveryUpdate(entry.Payload, "delivered")
+	}
+
+	if err := b.writePeerMessageQueue(remaining); err != nil {
+		return fmt.Errorf("write peerMessage queue: %w", err)
+	}
+	return nil
+}
+
+func emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus string) error {
+	if PeerMessageEventSink == nil {
+		return nil
+	}
+	return PeerMessageEventSink(PeerMessageEvent{
+		Version:        "v1",
+		Type:           "message_delivery_update",
+		ConversationID: payload.ConversationID,
+		MessageID:      payload.Message.ID,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: map[string]any{
+			"conversation_id": payload.ConversationID,
+			"delivery_status": deliveryStatus,
+			"message_id":      payload.Message.ID,
+			"message": map[string]any{
+				"id":              payload.Message.ID,
+				"conversation_id": payload.Message.ConversationID,
+				"delivery_status": deliveryStatus,
+			},
+		},
+	})
+}
+
+func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.pm.CurrentProfile().ID == "" {
+		return nil, nil
+	}
+	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
+	bs, err := b.pm.Store().ReadState(key)
+	if err != nil {
+		if errors.Is(err, ipn.ErrStateNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(bs) == 0 {
+		return nil, nil
+	}
+	var entries []peerMessageQueueEntry
+	if err := json.Unmarshal(bs, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (b *LocalBackend) writePeerMessageQueue(entries []peerMessageQueueEntry) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.pm.CurrentProfile().ID == "" {
+		return nil
+	}
+	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
+	if len(entries) == 0 {
+		return b.pm.WriteState(key, nil)
+	}
+	bs, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	return b.pm.WriteState(key, bs)
 }
 
 func resolvePeerByRef(nm *netmap.NetworkMap, peerRef string) (tailcfg.NodeView, error) {

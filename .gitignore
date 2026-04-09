@@ -57,3 +57,11 @@ client/web/.env.local
 
 # Ignore syncthing state directory.
 /.stfolder
+
+# CYLONIX_ADD: locally-built test artifacts and OS metadata.
+.DS_Store
+.gocache-local/
+.tools/
+derpbench
+derper-linux-amd64
+tailscaled
