@@ -51,3 +51,10 @@ client/web/.env.local
 *.xcworkspacedata
 /tstest/tailmac/bin
 /tstest/tailmac/build
+
+.DS_Store
+.gocache-local/
+.tools/
+derpbench
+derper-linux-amd64
+tailscaled

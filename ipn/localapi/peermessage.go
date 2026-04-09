@@ -44,11 +44,12 @@ func (h *Handler) servePeerMessageSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.b.SendPeerMessage(r.Context(), peerRef, payload); err != nil {
+	result, err := h.b.SendPeerMessage(r.Context(), peerRef, payload)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte("{}\n"))
+	json.NewEncoder(w).Encode(result)
 }
