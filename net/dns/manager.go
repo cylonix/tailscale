@@ -343,10 +343,13 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 		rcfg.Routes["."] = cfg.DefaultResolvers
 		ocfg.Nameservers = cfg.serviceIPs(m.knobs)
 		// CYLONIX_NOTE: cylonix's MustAddDefaultResolvers override has been
-		// dropped here because that field does not exist on dns.Config in
-		// v1.96.4. If the override is still required for the cylonix exit
-		// node use case, it must be reintroduced as a Config field with
-		// matching plumbing through the resolver/forwarder.
+		// dropped because that field does not exist on dns.Config in v1.96.4.
+		// CYLONIX_ADD: on macOS, populate MatchDomains so the OS can route
+		// per-domain DNS to the tunnel; skip when there's a catch-all "."
+		// route (exit node) so all DNS flows through the tunnel.
+		if m.goos == "darwin" {
+			ocfg.MatchDomains = cfg.matchDomains()
+		}
 		return rcfg, ocfg, nil
 	}
 
@@ -431,6 +434,16 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 				m.logf("iOS split DNS is disabled by nodeattr")
 			}
 		}
+		// __BEGIN_CYLONIX_ADD__
+		// On macOS, MatchDomains enables split DNS for both install modes:
+		// - Direct install: darwinConfigurator writes /etc/resolver/{domain} files
+		// - App Store (NE): passed through to NEDNSSettings.matchDomains so
+		//   only tailscale domain queries go through the tunnel DNS, and system
+		//   DNS is left alone when the tunnel stops.
+		if m.goos == "darwin" {
+			ocfg.MatchDomains = cfg.matchDomains()
+		}
+		// __END_CYLONIX_ADD__
 		var defaultRoutes []*dnstype.Resolver
 		for _, ip := range baseCfg.Nameservers {
 			defaultRoutes = append(defaultRoutes, &dnstype.Resolver{Addr: ip.String()})

@@ -31,7 +31,7 @@ func DefaultTailscaledSocket() string {
 		return `\\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled`
 	}
 	if runtime.GOOS == "darwin" {
-		return "/var/run/" + customize.ServiceName + ".socket" // __CYLONIX_MOD__
+		return fmt.Sprintf("/var/run/%s/%s.sock", customize.LinuxProgramName, customize.ServiceName) // __CYLONIX_MOD__
 	}
 	if runtime.GOOS == "plan9" {
 		return "/srv/" + customize.ServiceName + ".sock" // __CYLONIX_MOD__

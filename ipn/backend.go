@@ -161,6 +161,11 @@ type Notify struct {
 	// be the best exit node for the current network conditions.
 	SuggestedExitNode *tailcfg.StableNodeID `json:",omitzero"`
 
+	// PeerMessageEvent, if non-nil, contains a peer messaging event
+	// (message received, delivery update, etc.) for clients that consume
+	// events via watch-ipn-bus rather than the PeerMessageEventSink callback.
+	PeerMessageEvent any `json:",omitempty"` // __CYLONIX_ADD__
+
 	// type is mirrored in xcode/IPN/Core/LocalAPI/Model/LocalAPIModel.swift
 }
 
