@@ -3173,6 +3173,15 @@ func (b *LocalBackend) sendTo(n ipn.Notify, recipient notificationTarget) {
 
 // sendToLocked is like [LocalBackend.sendTo], but assumes b.mu is already held.
 func (b *LocalBackend) sendToLocked(n ipn.Notify, recipient notificationTarget) {
+	// __BEGIN_CYLONIX_ADD__
+	// Record every state-bearing notification with a goroutine stack trace so
+	// that surprising state=0 (NoState) deliveries can be traced back to the
+	// originating code path, even if the realtime log is dropped.
+	if n.State != nil {
+		recordCylonixStateSend(b.state, *n.State)
+		b.logf("cylonix state-send: %v -> %v (see debug-state-traces for stack)", b.state, *n.State)
+	}
+	// __END_CYLONIX_ADD__
 	if n.Prefs != nil {
 		n.Prefs = ptr.To(stripKeysFromPrefs(*n.Prefs))
 	}

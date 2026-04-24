@@ -281,7 +281,7 @@ func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context) error {
 			remaining = append(remaining, entry)
 			continue
 		}
-		_ = emitPeerMessageDeliveryUpdate(entry.Payload, "delivered")
+		_ = b.emitPeerMessageDeliveryUpdate(entry.Payload, "delivered")
 	}
 
 	if err := b.writePeerMessageQueue(remaining); err != nil {
@@ -290,11 +290,8 @@ func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context) error {
 	return nil
 }
 
-func emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus string) error {
-	if PeerMessageEventSink == nil {
-		return nil
-	}
-	return PeerMessageEventSink(PeerMessageEvent{
+func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus string) error {
+	event := PeerMessageEvent{
 		Version:        "v1",
 		Type:           "message_delivery_update",
 		ConversationID: payload.ConversationID,
@@ -310,7 +307,13 @@ func emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, delivery
 				"delivery_status": deliveryStatus,
 			},
 		},
-	})
+	}
+	if PeerMessageEventSink != nil {
+		return PeerMessageEventSink(event)
+	}
+	// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
+	b.send(ipn.Notify{PeerMessageEvent: event})
+	return nil
 }
 
 func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, error) {
@@ -455,6 +458,9 @@ func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
+		ph.LocalBackend().send(ipn.Notify{PeerMessageEvent: event})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

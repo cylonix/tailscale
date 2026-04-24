@@ -93,6 +93,7 @@ var handler = map[string]LocalAPIHandler{
 	"component-debug-logging":     (*Handler).serveComponentDebugLogging,
 	"debug":                       (*Handler).serveDebug,
 	"debug-derp-region":           (*Handler).serveDebugDERPRegion,
+	"debug-state-traces":          (*Handler).serveDebugStateTraces, // __CYLONIX_ADD__
 	"debug-dial-types":            (*Handler).serveDebugDialTypes,
 	"debug-log":                   (*Handler).serveDebugLog,
 	"debug-packet-filter-matches": (*Handler).serveDebugPacketFilterMatches,
@@ -3162,6 +3163,34 @@ func (h *Handler) onEnvknobSetAlwaysUseRelay(setting string) error {
 	}
 	h.logf("Re-stunning DONE for alwaysUserRelay(%v)", on)
 	return nil
+}
+
+// serveDebugStateTraces returns the Cylonix ring buffer of recent IPN
+// state-send events, each including a goroutine stack trace taken at the
+// moment the state was pushed. Used to track down surprising state=0
+// notifications whose originating code path is otherwise lost once the
+// realtime log rolls.
+//
+// GET  /localapi/v0/debug-state-traces              -> pretty text
+// GET  /localapi/v0/debug-state-traces?format=json  -> JSON array
+func (h *Handler) serveDebugStateTraces(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitRead {
+		http.Error(w, "debug-state-traces access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.GET {
+		http.Error(w, "use GET", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.FormValue("format") == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(ipnlocal.CylonixGetStateTraces()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.WriteString(w, ipnlocal.CylonixFormatStateTraces())
 }
 
 func (h *Handler) serveLog(w http.ResponseWriter, r *http.Request) {

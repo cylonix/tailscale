@@ -214,6 +214,20 @@ func lookup(ctx context.Context, host string, logf logger.Logf, ht *health.Track
 		return []netip.Addr{ip}, nil
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	// Consult the hardcoded Cylonix controller IP list first. System DNS is
+	// commonly poisoned for Cylonix controller hostnames under GFW, and the
+	// DERP bootstrap path below depends on reaching a DERP first — which is
+	// itself not guaranteed before the user has a cached DERP map. Returning
+	// a baked-in answer for known hosts shortcuts both problems.
+	if ips, ok := cylonixStaticLookup(host); ok && len(ips) > 0 {
+		out := slices.Clone(ips)
+		slicesx.Shuffle(out)
+		logf("cylonix static fallback for %q = %v", host, out)
+		return out, nil
+	}
+	// __END_CYLONIX_ADD__
+
 	type nameIP struct {
 		dnsName string
 		ip      netip.Addr
@@ -318,6 +332,7 @@ type dnsMap map[string][]netip.Addr
 // run a fallback DNS server.
 func GetDERPMap() *tailcfg.DERPMap {
 	dm := getStaticDERPMap()
+	mergeCylonixDERPs(dm) // __CYLONIX_ADD__
 
 	// Merge in any DERP servers from the cached map that aren't in the
 	// static map; this ensures that we're getting new region(s) while not

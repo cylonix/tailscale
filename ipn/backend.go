@@ -153,6 +153,11 @@ type Notify struct {
 	// any changes to the user in the UI.
 	Health *health.State `json:",omitempty"`
 
+	// PeerMessageEvent, if non-nil, contains a peer messaging event
+	// (message received, delivery update, etc.) for clients that consume
+	// events via watch-ipn-bus rather than the PeerMessageEventSink callback.
+	PeerMessageEvent any `json:",omitempty"` // __CYLONIX_ADD__
+
 	// type is mirrored in xcode/IPN/Core/LocalAPI/Model/LocalAPIModel.swift
 }
 
