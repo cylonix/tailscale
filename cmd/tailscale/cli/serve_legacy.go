@@ -120,7 +120,8 @@ EXAMPLES
 
 // errHelp is standard error text that prompts users to
 // run `serve --help` for information on how to use serve.
-var errHelp = errors.New("try `tailscale serve --help` for usage info")
+// CYLONIX_MOD: CLI was renamed to cylonix; new code uses errHelpFunc producing "cylonix".
+var errHelp = errors.New("try `cylonix serve --help` for usage info")
 
 func (e *serveEnv) newFlags(name string, setup func(fs *flag.FlagSet)) *flag.FlagSet {
 	onError, out := flag.ExitOnError, Stderr

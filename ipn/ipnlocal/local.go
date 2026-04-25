@@ -93,6 +93,7 @@ import (
 	"tailscale.com/util/eventbus"
 	"tailscale.com/util/execqueue"
 	"tailscale.com/util/goroutines"
+	"tailscale.com/util/httpm"
 	"tailscale.com/util/mak"
 	"tailscale.com/util/osuser"
 	"tailscale.com/util/rands"
@@ -697,7 +698,15 @@ func (b *LocalBackend) currentNode() *nodeBackend {
 	if v := b.currentNodeAtomic.Load(); v != nil || !testenv.InTest() {
 		return v
 	}
-	v := newNodeBackend(cmp.Or(b.ctx, context.Background()), b.logf, b.sys.Bus.Get())
+	// CYLONIX_MOD: support zero-value LocalBackend usage in tests where
+	// b.sys may be nil; fall back to a fresh eventbus.
+	var bus *eventbus.Bus
+	if b.sys != nil {
+		bus = b.sys.Bus.Get()
+	} else {
+		bus = eventbus.New()
+	}
+	v := newNodeBackend(cmp.Or(b.ctx, context.Background()), b.logf, bus)
 	if b.currentNodeAtomic.CompareAndSwap(nil, v) {
 		v.ready()
 	}
@@ -5116,7 +5125,7 @@ func (b *LocalBackend) doSetExitNodeIDLocked(prefs *ipn.Prefs, exitNodeID string
 	replyCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(replyCtx, http.MethodPut, u.String(), nil)
+	req, err := http.NewRequestWithContext(replyCtx, httpm.PUT, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
@@ -5165,7 +5174,7 @@ func (b *LocalBackend) AddDelNodeCapability(cap tailcfg.NodeCapability, op strin
 	replyCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(replyCtx, http.MethodPut, u.String(), nil)
+	req, err := http.NewRequestWithContext(replyCtx, httpm.PUT, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}

@@ -1615,8 +1615,13 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 	// Make request to tailscaled localapi.
 	resp, err := s.lc.DoLocalRequest(req)
 	if err != nil {
-		s.logf("proxyRequestToLocalAPI: DoLocalRequest error: %v status=%v err=%v", path, resp.StatusCode, err)
-		http.Error(w, err.Error(), resp.StatusCode)
+		// CYLONIX_FIX: resp may be nil on transport error; guard StatusCode.
+		status := http.StatusInternalServerError
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		s.logf("proxyRequestToLocalAPI: DoLocalRequest error: %v status=%v err=%v", path, status, err)
+		http.Error(w, err.Error(), status)
 		return
 	}
 	defer resp.Body.Close()

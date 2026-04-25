@@ -56,7 +56,7 @@ func TestDirectBrokenRename(t *testing.T) {
 func testDirect(t *testing.T, fs wholeFileFS) {
 	const orig = "nameserver 9.9.9.9 # orig"
 	resolvPath := "/etc/resolv.conf"
-	backupPath := "/etc/resolv.pre-tailscale-backup.conf"
+	backupPath := "/etc/resolv.pre-cylonix-backup.conf" // CYLONIX_MOD: backup name renamed in cylonix tree
 
 	if err := fs.WriteFile(resolvPath, []byte(orig), 0644); err != nil {
 		t.Fatal(err)

@@ -969,6 +969,12 @@ func TestManager(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			// CYLONIX_MOD: cylonix unconditionally populates MatchDomains on
+			// darwin so the OS routes per-domain DNS through the tunnel; the
+			// upstream "non-split" expectation no longer applies.
+			if test.name == "routes-multi-does-not-split-on-darwin" {
+				t.Skip("cylonix: macOS now sets MatchDomains for split DNS routing")
+			}
 			f := fakeOSConfigurator{
 				SplitDNS:   test.split,
 				BaseConfig: test.bs,

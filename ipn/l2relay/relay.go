@@ -37,6 +37,7 @@ import (
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
+	"tailscale.com/util/httpm"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -3168,7 +3169,7 @@ func (m *l2RelayManager) maybeSendLeaderToPeers(ctx context.Context, nm *netmap.
 func (m *l2RelayManager) postPeerAPIJSON(parent context.Context, url string, payload []byte) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(parent, l2RelayPeerSendTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, httpm.POST, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}

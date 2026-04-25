@@ -216,7 +216,10 @@ func TestHandleC2NDebugNetmap(t *testing.T) {
 			}
 
 			if diff := gcmp.Diff(tt.want, got,
-				gcmp.AllowUnexported(netmap.NetworkMap{}, key.NodePublic{}, views.Slice[tailcfg.FilterRule]{}),
+				gcmp.AllowUnexported(netmap.NetworkMap{}, key.NodePublic{},
+					views.Slice[tailcfg.FilterRule]{},
+					views.Slice[tailcfg.L2DiscoveryRule]{}, // CYLONIX_ADD
+				),
 				cmpopts.EquateComparable(key.MachinePublic{}),
 			); diff != "" {
 				t.Errorf("netmap mismatch (-want +got):\n%s", diff)

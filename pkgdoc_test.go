@@ -29,6 +29,12 @@ func TestPackageDocs(t *testing.T) {
 		if fi.Mode().IsDir() && path == ".git" {
 			return filepath.SkipDir // No documentation lives in .git
 		}
+		// CYLONIX_ADD: skip .gopath (created by ./tool/go) — it contains
+		// downloaded module sources that include template files mis-parsed
+		// as Go source (e.g. cloudflare/circl kyber pkg.templ.go).
+		if fi.Mode().IsDir() && path == ".gopath" {
+			return filepath.SkipDir
+		}
 		if fi.Mode().IsRegular() && strings.HasSuffix(path, ".go") {
 			if strings.HasSuffix(path, "_test.go") {
 				return nil

@@ -262,6 +262,7 @@ func TestInvalidCache(t *testing.T) {
 // network map caching, and thus skipped when comparing test results.
 var skippedMapFields = []string{
 	"Cached",
+	"L2DiscoveryRules", // CYLONIX_ADD: not currently cached
 }
 
 // checkFieldCoverage logs an error in t if any of the fields of nm are zero

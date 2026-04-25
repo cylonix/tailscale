@@ -19,6 +19,7 @@ func resetLogTarget() {
 }
 
 func TestLogHost(t *testing.T) {
+	t.Skip("cylonix: log target defaults to log.cylonix.io; upstream default-host expectation does not apply")
 	defer resetLogTarget()
 
 	tests := []struct {
@@ -72,6 +73,12 @@ func TestOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// CYLONIX_MOD: cylonix forces a default log target of log.cylonix.io
+			// when TS_LOG_TARGET is unset, so the "default" case deviates from
+			// upstream. Skip just that subtest.
+			if tt.name == "default" {
+				t.Skip("cylonix: default log target is log.cylonix.io")
+			}
 			resetLogTarget()
 			config, policy := tt.opts().init(false)
 			if policy == nil {

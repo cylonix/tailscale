@@ -18,6 +18,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
+	"tailscale.com/util/httpm"
 )
 
 type PeerMessage struct {
@@ -158,7 +159,7 @@ func (b *LocalBackend) sendPeerMessageNow(ctx context.Context, nm *netmap.Networ
 
 	req, err := http.NewRequestWithContext(
 		ctx,
-		http.MethodPost,
+		httpm.POST,
 		base+"/v0/peer-message/message",
 		bytes.NewReader(body),
 	)
@@ -396,7 +397,7 @@ func normalizePeerRef(value string) string {
 }
 
 func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}

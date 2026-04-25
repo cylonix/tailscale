@@ -777,7 +777,8 @@ func (p *Prefs) ControlURLOrDefault(polc policyclient.Client) string {
 	// __BEGIN_CYLONIX_MOD__
 	// If the policy did not explicitly set the ControlURL, we
 	// should return the ControlURL set in the Prefs.
-	log.Printf("ControlURL is empty, using Prefs.ControlURL: %v", p.ControlURL)
+	// CYLONIX_MOD: dropped log.Printf — it triggers tstest's no-stdlib-log
+	// guard in tests and adds no debugging value here.
 	if p.ControlURL != "" {
 		return p.ControlURL
 	}

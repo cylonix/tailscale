@@ -54,6 +54,9 @@ func TestIsNotableNotify(t *testing.T) {
 				rf.SetString("foo")
 			case reflect.Slice:
 				rf.Set(reflect.MakeSlice(rf.Type(), 1, 1))
+			case reflect.Interface:
+				// CYLONIX_ADD: PeerMessageEvent uses any type.
+				rf.Set(reflect.ValueOf("nonzero"))
 			default:
 				t.Errorf("unhandled field kind %v for %q", rf.Kind(), sf.Name)
 			}

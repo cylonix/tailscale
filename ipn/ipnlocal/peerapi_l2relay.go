@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"tailscale.com/ipn/l2relay"
+	"tailscale.com/util/httpm"
 )
 
 func init() {
@@ -22,7 +23,7 @@ func init() {
 }
 
 func handleL2RelayHello(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -39,7 +40,7 @@ func handleL2RelayHello(h PeerAPIHandler, w http.ResponseWriter, r *http.Request
 }
 
 func handleL2RelayLeader(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -59,7 +60,7 @@ func handleL2RelayLeader(h PeerAPIHandler, w http.ResponseWriter, r *http.Reques
 }
 
 func handleL2RelayEnvelope(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -83,7 +84,7 @@ func handleL2RelayEnvelope(h PeerAPIHandler, w http.ResponseWriter, r *http.Requ
 }
 
 func handleL2RelayProxyTCP(h PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}

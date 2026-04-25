@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tailscale.com/ipn/ipnlocal"
+	"tailscale.com/util/httpm"
 )
 
 func init() {
@@ -20,7 +21,7 @@ func (h *Handler) servePeerMessageSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "want POST", http.StatusMethodNotAllowed)
 		return
 	}

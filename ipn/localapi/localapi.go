@@ -77,10 +77,18 @@ var handler = map[string]LocalAPIHandler{
 
 	// The other /localapi/v0/NAME handlers are exact matches and contain only NAME
 	// without a trailing slash:
+	// CYLONIX_ADD: cap, debug-state-traces, envknob, l2relay-capture, log are
+	// cylonix-only LocalAPI endpoints; they are placed in alphabetical order
+	// to satisfy TestKeepItSorted.
+	"cap":                  (*Handler).serveCap,
 	"check-prefs":          (*Handler).serveCheckPrefs,
 	"check-so-mark-in-use": (*Handler).serveCheckSOMarkInUse,
+	"debug-state-traces":   (*Handler).serveDebugStateTraces,
 	"derpmap":              (*Handler).serveDERPMap,
+	"envknob":              (*Handler).serveEnvknob,
 	"goroutines":           (*Handler).serveGoroutines,
+	"l2relay-capture":      (*Handler).serveL2RelayCapture,
+	"log":                  (*Handler).serveLog,
 	"login-interactive":    (*Handler).serveLoginInteractive,
 	"logout":               (*Handler).serveLogout,
 	"ping":                 (*Handler).servePing,
@@ -92,12 +100,6 @@ var handler = map[string]LocalAPIHandler{
 	"start":                (*Handler).serveStart,
 	"status":               (*Handler).serveStatus,
 	"whois":                (*Handler).serveWhoIs,
-	// CYLONIX_ADD: cylonix-only LocalAPI endpoints.
-	"cap":                (*Handler).serveCap,
-	"debug-state-traces": (*Handler).serveDebugStateTraces,
-	"envknob":            (*Handler).serveEnvknob,
-	"l2relay-capture":    (*Handler).serveL2RelayCapture,
-	"log":                (*Handler).serveLog,
 }
 
 func init() {
@@ -1955,7 +1957,7 @@ func (h *Handler) serveCap(w http.ResponseWriter, r *http.Request) {
 
 // CYLONIX_ADD: L2 relay capture toggle endpoint.
 func (h *Handler) serveL2RelayCapture(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+	if r.Method == httpm.GET {
 		if !h.PermitRead {
 			http.Error(w, "l2relay capture access denied", http.StatusForbidden)
 			return
@@ -1965,7 +1967,7 @@ func (h *Handler) serveL2RelayCapture(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if r.Method != http.MethodPost {
+	if r.Method != httpm.POST {
 		http.Error(w, "use GET or POST", http.StatusMethodNotAllowed)
 		return
 	}
