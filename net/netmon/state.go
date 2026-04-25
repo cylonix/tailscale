@@ -22,6 +22,7 @@ import (
 	"tailscale.com/hostinfo"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/tsaddr"
+	"tailscale.com/types/logger" // __CYLONIX_ADD__ used by quietLogf
 	"tailscale.com/util/mak"
 )
 

@@ -320,7 +320,7 @@ func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.pm.CurrentProfile().ID == "" {
+	if b.pm.CurrentProfile().ID() == "" {
 		return nil, nil
 	}
 	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
@@ -345,7 +345,7 @@ func (b *LocalBackend) writePeerMessageQueue(entries []peerMessageQueueEntry) er
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.pm.CurrentProfile().ID == "" {
+	if b.pm.CurrentProfile().ID() == "" {
 		return nil
 	}
 	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)

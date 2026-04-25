@@ -3027,7 +3027,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
 
 	// CYLONIX_ADD: refresh the wg-only peer address list whenever the
 	// netmap changes; this feeds the wgOnly-exit-node UDP filter above.
-	c.setWgOnlyPeerAddrsLocked(nm.Peers)
+	c.setWgOnlyPeerAddrsLocked(peers) // __CYLONIX_MOD__
 
 	// [debugFlags] are mutable in [Conn.SetSilentDisco] &
 	// [Conn.SetProbeUDPLifetime]. These setters are passed [controlknobs.Knobs]

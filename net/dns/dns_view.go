@@ -144,11 +144,12 @@ func (v ConfigView) Equal(v2 ConfigView) bool { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _ConfigViewNeedsRegeneration = Config(struct {
-	AcceptDNS        bool
-	DefaultResolvers []*dnstype.Resolver
-	Routes           map[dnsname.FQDN][]*dnstype.Resolver
-	SearchDomains    []dnsname.FQDN
-	Hosts            map[dnsname.FQDN][]netip.Addr
-	SubdomainHosts   set.Set[dnsname.FQDN]
-	OnlyIPv6         bool
+	AcceptDNS               bool
+	DefaultResolvers        []*dnstype.Resolver
+	Routes                  map[dnsname.FQDN][]*dnstype.Resolver
+	SearchDomains           []dnsname.FQDN
+	Hosts                   map[dnsname.FQDN][]netip.Addr
+	SubdomainHosts          set.Set[dnsname.FQDN]
+	OnlyIPv6                bool
+	MustAddDefaultResolvers bool // __CYLONIX_ADD__
 }{})

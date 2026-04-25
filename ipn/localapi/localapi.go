@@ -15,13 +15,11 @@ import (
 	// CYLONIX_ADD: imports for taildrop, package-policy logging, and
 	// multipart upload helpers used by handlers below.
 	"log"
-	"maps"
-	"mime"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os" // __CYLONIX_ADD__
 	"runtime"
 	"slices"
 	"strconv"

@@ -448,7 +448,13 @@ func (m *l2RelayManager) captureEnabledState() bool {
 }
 
 func (m *l2RelayManager) onNetworkChange(delta *netmon.ChangeDelta) {
-	if delta == nil || (!delta.Major && !delta.TimeJumped) {
+	// __BEGIN_CYLONIX_MOD__
+	// netmon.ChangeDelta.Major was replaced in upstream v1.94+ by a set of
+	// boolean fields. RebindLikelyRequired is the closest equivalent: it
+	// summarises the change as "significant enough that sockets likely need
+	// rebinding." We use it as the gate for restarting the L2 relay.
+	major := delta.RebindLikelyRequired
+	if delta == nil || (!major && !delta.TimeJumped) {
 		return
 	}
 	nm := m.b.NetMap()
@@ -456,7 +462,8 @@ func (m *l2RelayManager) onNetworkChange(delta *netmon.ChangeDelta) {
 	var startCtx context.Context
 	lockedAt := m.lockRelayMu("onNetworkChange")
 	m.segmentID, m.segmentStrong, m.rank = m.computeSegmentLocked(nm)
-	m.logf("l2relay: netmon change major=%v time_jumped=%v segmentID=%q strong=%v rank=%d", delta.Major, delta.TimeJumped, m.segmentID, m.segmentStrong, m.rank)
+	m.logf("l2relay: netmon change major=%v time_jumped=%v segmentID=%q strong=%v rank=%d", major, delta.TimeJumped, m.segmentID, m.segmentStrong, m.rank)
+	// __END_CYLONIX_MOD__
 	cancel, startCtx = m.restartCaptureLocked("network-change")
 	m.unlockRelayMu("onNetworkChange", lockedAt)
 	if cancel != nil {

@@ -126,7 +126,7 @@ func (de *endpoint) udpRelayEndpointReady(maybeBest addrQuality) {
 		// TODO(jwhited): collapse path change logging with endpoint.handlePongConnLocked()
 		de.c.logf("magicsock: disco: node %v %v now using %v mtu=%v", de.publicKey.ShortString(), de.discoShort(), maybeBest.epAddr, maybeBest.wireMTU)
 		de.setBestAddrLocked(maybeBest)
-		de.trustBestAddrUntil = now.Add(trustUDPAddrDuration)
+		de.trustBestAddrUntil = now.Add(trustUDPAddrDuration())
 	}
 }
 
@@ -674,7 +674,7 @@ func (de *endpoint) addrForPingSizeLocked(now mono.Time, size int) (udpAddr epAd
 		if !now.After(de.trustBestAddrUntil) {
 			// __BEGIN_CYLONIX_ADD__
 			if debugAlwaysDERP() {
-				return netip.AddrPort{}, de.derpAddr
+				return epAddr{}, de.derpAddr
 			}
 			// __END_CYLONIX_ADD__
 			return udpAddr, netip.AddrPort{}

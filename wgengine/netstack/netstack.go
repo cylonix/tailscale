@@ -1823,17 +1823,17 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 	ep, err := r.CreateEndpoint(&wq)
 	if err != nil {
 		ns.logf("acceptUDP: could not create endpoint: %v", err)
-		return false
+		return
 	}
 	dstAddr, ok := ipPortOfNetstackAddr(sess.LocalAddress, sess.LocalPort)
 	if !ok {
 		ep.Close()
-		return false
+		return
 	}
 	srcAddr, ok := ipPortOfNetstackAddr(sess.RemoteAddress, sess.RemotePort)
 	if !ok {
 		ep.Close()
-		return false
+		return
 	}
 
 	// Handle magicDNS and loopback traffic (via UDP) here.
@@ -1842,7 +1842,7 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 		case dstAddr.Port() == 53:
 			c := gonet.NewUDPConn(&wq, ep)
 			go ns.handleMagicDNSUDP(srcAddr, c)
-			return true
+			return
 		case ns.isLoopbackPort(dstAddr.Port()):
 			if dst == serviceIPv6 {
 				dstAddr = netip.AddrPortFrom(ipv6Loopback, dstAddr.Port())
@@ -1851,7 +1851,7 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 			}
 		default:
 			ep.Close()
-			return false // Only MagicDNS and loopback traffic runs on the service IPs for now.
+			return // Only MagicDNS and loopback traffic runs on the service IPs for now.
 		}
 	}
 
@@ -1861,10 +1861,10 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 		if intercept {
 			if h == nil {
 				ep.Close()
-				return false
+				return
 			}
 			go h(gonet.NewUDPConn(&wq, ep))
-			return true
+			return
 		}
 	}
 	// __END_CYLONIX_ADD__
@@ -1874,16 +1874,15 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 		if intercept {
 			if h == nil {
 				ep.Close()
-				return false
+				return
 			}
 			go h(gonet.NewUDPConn(&wq, ep))
-			return true
+			return
 		}
 	}
 
 	c := gonet.NewUDPConn(&wq, ep)
 	go ns.forwardUDP(c, srcAddr, dstAddr)
-	return true
 }
 
 // Buffer pool for forwarding UDP packets. Implementations are advised not to

@@ -139,7 +139,7 @@ type activeDerp struct {
 // xray TCP tunnels.
 type activeDerpWriter struct {
 	c         *derphttp.Client
-	writeCh   chan<- derpWriteRequest
+	writeCh   chan derpWriteRequest // __CYLONIX_MOD__
 	lastWrite *time.Time
 }
 
@@ -588,7 +588,7 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 			ewDC.SetAddressFamilySelector(derpAddrFamSelector{c})
 			ewDC.DNSCache = dnscache.Get()
 
-			ewCh := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop())
+			ewCh := make(chan derpWriteRequest, derpWriteQueueDepth) // __CYLONIX_MOD__
 			ewLastWrite := new(time.Time)
 			*ewLastWrite = time.Now()
 			ew := &activeDerpWriter{

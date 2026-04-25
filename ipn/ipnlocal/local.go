@@ -52,10 +52,9 @@ import (
 	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnext"
 	"tailscale.com/ipn/ipnstate"
-	// CYLONIX_ADD: l2relay (mDNS/WSD layer-2 discovery) and a small policy
-	// helper used by it.
+	// CYLONIX_ADD: l2relay (mDNS/WSD layer-2 discovery)
 	"tailscale.com/ipn/l2relay"
-	"tailscale.com/ipn/policy"
+	// __CYLONIX_REMOVED__: tailscale.com/ipn/policy import — was unused after rebase
 	"tailscale.com/log/sockstatlog"
 	"tailscale.com/logpolicy"
 	"tailscale.com/net/dns"
@@ -1637,14 +1636,14 @@ func (b *LocalBackend) setControlClientStatusLocked(c controlclient.Client, st c
 			s := vizerr.Error()
 			b.sendLocked(ipn.Notify{ErrMessage: &s})
 		}
-		// __BEGIN_CYLONIX_ADD__
+		// __BEGIN_CYLONIX_MOD__
 		if errors.Is(st.Err, controlclient.ErrNodeUnauthorized) {
 			// If we get an unauthorized error, we need to go back to the NeedsLogin state
 			// so that the user can re-authenticate.
 			b.logf("Node unauthorized, entering NeedsLogin state")
-			b.enterState(ipn.NeedsLogin)
+			b.enterStateLocked(ipn.NeedsLogin)
 		}
-		// __END_CYLONIX_ADD__
+		// __END_CYLONIX_MOD__
 		return
 	}
 
@@ -1960,7 +1959,7 @@ func (b *LocalBackend) applySysPolicyLocked(prefs *ipn.Prefs) (anyChange bool) {
 		// CYLONIX_MOD: only honor the policy-supplied control URL when it
 		// is non-empty, so that an empty policy value behaves as "unset"
 		// rather than overriding the user's configured server.
-		log.Printf("Cylonix: controlURL policy set to %q", controlURL)
+		b.logf("Cylonix: controlURL policy set to %q", controlURL) // __CYLONIX_MOD__
 		if controlURL != "" {
 			prefs.ControlURL = controlURL
 			anyChange = true
@@ -5198,10 +5197,11 @@ func (b *LocalBackend) GetDevStateStore(key string) ([]byte, error) {
 
 func (b *LocalBackend) setSendDNSToExitNodeInTunnelLocked() {
 	exitNodeID := b.pm.CurrentPrefs().ExitNodeID()
-	if exitNodeID.IsZero() || b.peers == nil {
+	peers := b.currentNode().Peers() // __CYLONIX_MOD__: was b.peers
+	if exitNodeID.IsZero() || peers == nil {
 		return
 	}
-	for _, p := range b.peers {
+	for _, p := range peers {
 		if p.StableID() == exitNodeID {
 			// Check the exit node DNS preference to see if it is set
 			// to send DNS to exit node in the tunnel.
@@ -7133,7 +7133,7 @@ func wireguardExitNodeDNSResolvers(nm *netmap.NetworkMap, peers map[tailcfg.Node
 				}
 				// __BEGIN_CYLONIX_ADD__
 				// Set default DNS resolvers to a list of well-known public DNS servers
-				log.Printf("[cylonix] Using default DNS resolvers for WireGuard-only exit node")
+				// __CYLONIX_REMOVED__: log line dropped (no logger plumbed into this free function)
 				return []*dnstype.Resolver{
 					{Addr: "1.1.1.1"},
 					{Addr: "1.0.0.1"},
@@ -7414,19 +7414,22 @@ func (b *LocalBackend) ShouldInterceptUDPPort(port uint16) bool {
 // StoreTestFilter is a test-only helper that replaces filterAtomic directly
 // without triggering regular reconfiguration side effects.
 func (b *LocalBackend) StoreTestFilter(f *filter.Filter) {
-	b.filterAtomic.Store(f)
+	b.currentNode().setFilter(f) // __CYLONIX_MOD__: filterAtomic moved to nodeBackend
 }
 
 // SetTestNetmap is a test-only helper that sets netMap directly
 // without running the regular netmap update handling pipeline.
 func (b *LocalBackend) SetTestNetmap(nm *netmap.NetworkMap) {
-	b.mu.Lock()
-	b.netMap = nm
-	b.mu.Unlock()
+	// __BEGIN_CYLONIX_MOD__: netMap moved to nodeBackend
+	cn := b.currentNode()
+	cn.mu.Lock()
+	cn.netMap = nm
+	cn.mu.Unlock()
+	// __END_CYLONIX_MOD__
 }
 
 func (b *LocalBackend) Filter() *filter.Filter {
-	return b.filterAtomic.Load()
+	return b.currentNode().filter() // __CYLONIX_MOD__: filterAtomic moved to nodeBackend
 }
 
 func (b *LocalBackend) PeerAPIBase(peer tailcfg.NodeView) string {
