@@ -185,10 +185,8 @@ func mkSeed(t *testing.T, d Distro, hostname, sshKey, hostURL, tdir string, port
 		filepath.Join(dir, "user-data"),
 	}
 
-	if hackOpenSUSE151UserData(t, d, dir) {
-		args = append(args, filepath.Join(dir, "openstack"))
-	}
-
+	// CYLONIX_REMOVED: hackOpenSUSE151UserData and the opensuse 15.1 distro
+	// were dropped upstream in v1.96.4 (commit 7df7e01d0).
 	run(t, tdir, isoImageTool(t), args...)
 }
 

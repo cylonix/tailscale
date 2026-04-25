@@ -18,7 +18,7 @@ import (
 	cyqnap "tailscale.com/release/dist/cylonix-qnap"       // __CYLONIX_ADD__
 	cysynolo "tailscale.com/release/dist/cylonix-synology" // __CYLONIX_ADD__
 	"tailscale.com/release/dist/qnap"
-	"tailscale.com/release/dist/synology"
+	// CYLONIX_REMOVED: upstream synology import unused (replaced by cylonix-synology)
 	"tailscale.com/release/dist/unixpkgs"
 )
 

@@ -2007,6 +2007,11 @@ func (e *mockEngine) Ping(ip netip.Addr, pingType tailcfg.PingType, size int, cb
 
 func (e *mockEngine) InstallCaptureHook(packet.CaptureCallback) {}
 
+// CYLONIX_ADD: stubs for cylonix Engine extensions used elsewhere in the tree.
+func (e *mockEngine) ResetDNSClientCache()    {}
+func (e *mockEngine) SetTunnelName(string)    {}
+func (e *mockEngine) InjectInboundRaw([]byte) error { return nil }
+
 func (e *mockEngine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -16,7 +16,7 @@ func TestL2DiscoveryRulesUserspaceMultiNode(t *testing.T) {
 	tstest.Shard(t)
 	tstest.Parallel(t)
 
-	env := newTestEnv(t, configureControl(func(cs *testcontrol.Server) {
+	env := NewTestEnv(t, ConfigureControl(func(cs *testcontrol.Server) {
 		cs.L2DiscoveryRules = []tailcfg.L2DiscoveryRule{
 			{
 				Protocols: []string{"ssdp"},
@@ -26,21 +26,21 @@ func TestL2DiscoveryRulesUserspaceMultiNode(t *testing.T) {
 		}
 	}))
 
-	n1 := newTestNode(t, env)
+	n1 := NewTestNode(t, env)
 	d1 := n1.StartDaemon()
 	defer d1.MustCleanShutdown(t)
 	n1.AwaitResponding()
 	n1.MustUp()
 	n1.AwaitRunning()
 
-	n2 := newTestNode(t, env)
+	n2 := NewTestNode(t, env)
 	d2 := n2.StartDaemon()
 	defer d2.MustCleanShutdown(t)
 	n2.AwaitResponding()
 	n2.MustUp()
 	n2.AwaitRunning()
 
-	n3 := newTestNode(t, env)
+	n3 := NewTestNode(t, env)
 	d3 := n3.StartDaemon()
 	defer d3.MustCleanShutdown(t)
 	n3.AwaitResponding()

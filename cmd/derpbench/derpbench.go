@@ -37,6 +37,7 @@ import (
 	"tailscale.com/net/netmon"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/util/eventbus"
 )
 
 func main() {
@@ -70,7 +71,7 @@ func main() {
 		}
 	}
 
-	netMon, err := netmon.New(log.Printf)
+	netMon, err := netmon.New(eventbus.New(), log.Printf)
 	if err != nil {
 		log.Fatalf("netmon.New: %v", err)
 	}
@@ -250,7 +251,7 @@ func runCheck(serverURL string, xrayNode *tailcfg.DERPNode) {
 	fmt.Printf("  Step 1: GET %s\n", latencyURL)
 	var httpClient *http.Client
 	if xrayNode != nil {
-		netMon, err := netmon.New(log.Printf)
+		netMon, err := netmon.New(eventbus.New(), log.Printf)
 		if err != nil {
 			log.Fatalf("netmon.New: %v", err)
 		}
@@ -284,7 +285,7 @@ func runCheck(serverURL string, xrayNode *tailcfg.DERPNode) {
 
 	// Step 2: full DERP connect + send/recv ping.
 	fmt.Printf("  Step 2: DERP connect + ping to %s\n", serverURL)
-	netMon, err := netmon.New(log.Printf)
+	netMon, err := netmon.New(eventbus.New(), log.Printf)
 	if err != nil {
 		log.Fatalf("netmon.New: %v", err)
 	}

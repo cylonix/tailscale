@@ -23,10 +23,9 @@ import (
 func TestVML2DiscoveryRulesConnectivity(t *testing.T) {
 	setupTests(t)
 
+	// CYLONIX_REMOVED: distroRex was removed upstream in v1.96.4; rely on
+	// --run-vm-tests gating in setupTests instead.
 	distro := Distros[1] // ubuntu-20.04
-	if !distroRex.Unwrap().MatchString(distro.Name) {
-		t.Skip("regex not matched")
-	}
 
 	ctx, done := context.WithCancel(context.Background())
 	t.Cleanup(done)
@@ -107,10 +106,9 @@ func TestVML2DiscoveryRulesConnectivity(t *testing.T) {
 func TestVML2RelayUDPInterceptE2E(t *testing.T) {
 	setupTests(t)
 
+	// CYLONIX_REMOVED: distroRex was removed upstream in v1.96.4; rely on
+	// --run-vm-tests gating in setupTests instead.
 	distro := Distros[1] // ubuntu-20.04
-	if !distroRex.Unwrap().MatchString(distro.Name) {
-		t.Skip("regex not matched")
-	}
 
 	ctx, done := context.WithCancel(context.Background())
 	t.Cleanup(done)
@@ -161,10 +159,9 @@ func TestVML2RelayUDPInterceptE2E(t *testing.T) {
 func TestVML2RelayNASShareE2E(t *testing.T) {
 	setupTests(t)
 
+	// CYLONIX_REMOVED: distroRex was removed upstream in v1.96.4; rely on
+	// --run-vm-tests gating in setupTests instead.
 	distro := Distros[1] // ubuntu-20.04
-	if !distroRex.Unwrap().MatchString(distro.Name) {
-		t.Skip("regex not matched")
-	}
 
 	ctx, done := context.WithCancel(context.Background())
 	t.Cleanup(done)
@@ -237,10 +234,9 @@ func TestVML2RelayNASShareE2E(t *testing.T) {
 func TestVML2RelayMinecraftE2E(t *testing.T) {
 	setupTests(t)
 
+	// CYLONIX_REMOVED: distroRex was removed upstream in v1.96.4; rely on
+	// --run-vm-tests gating in setupTests instead.
 	distro := Distros[1] // ubuntu-20.04
-	if !distroRex.Unwrap().MatchString(distro.Name) {
-		t.Skip("regex not matched")
-	}
 
 	ctx, done := context.WithCancel(context.Background())
 	t.Cleanup(done)
