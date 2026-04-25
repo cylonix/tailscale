@@ -20,36 +20,47 @@ import (
 )
 
 // __BEGIN_CYLONIX_ADD__
+//
+// Cylonix transferID sidecar — small per-incoming-file marker that records a
+// stable peer-message transfer ID alongside the file. Upstream v1.96.4
+// replaced direct filesystem access with the FileOps abstraction (so Android
+// can use Storage Access Framework URIs), so the sidecar reader/writer here
+// goes through fileOps too. The sidecar basename is `<file>.cylonix-transfer-id`,
+// which lives in the same root as the file itself.
 const transferIDSidecarSuffix = ".cylonix-transfer-id"
 
-func (m *manager) transferIDSidecarPath(baseName string) (string, error) {
-	if m == nil || m.opts.Dir == "" {
-		return "", ErrNoTaildrop
-	}
-	path, err := joinDir(m.opts.Dir, baseName)
-	if err != nil {
-		return "", err
-	}
-	return path + transferIDSidecarSuffix, nil
+func (m *manager) transferIDSidecarName(baseName string) string {
+	return baseName + transferIDSidecarSuffix
 }
 
 func (m *manager) SetWaitingFileTransferID(baseName, transferID string) error {
+	if m == nil || m.opts.fileOps == nil {
+		return ErrNoTaildrop
+	}
 	if transferID == "" {
 		return nil
 	}
-	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	wc, _, err := m.opts.fileOps.OpenWriter(m.transferIDSidecarName(baseName), 0, 0600)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(sidecarPath, []byte(strings.TrimSpace(transferID)), 0600)
+	if _, werr := io.WriteString(wc, strings.TrimSpace(transferID)); werr != nil {
+		_ = wc.Close()
+		return werr
+	}
+	return wc.Close()
 }
 
 func (m *manager) WaitingFileTransferID(baseName string) string {
-	sidecarPath, err := m.transferIDSidecarPath(baseName)
+	if m == nil || m.opts.fileOps == nil {
+		return ""
+	}
+	rc, err := m.opts.fileOps.OpenReader(m.transferIDSidecarName(baseName))
 	if err != nil {
 		return ""
 	}
-	data, err := os.ReadFile(sidecarPath)
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
 	if err != nil {
 		return ""
 	}
@@ -57,11 +68,10 @@ func (m *manager) WaitingFileTransferID(baseName string) string {
 }
 
 func (m *manager) deleteWaitingFileTransferID(baseName string) {
-	sidecarPath, err := m.transferIDSidecarPath(baseName)
-	if err != nil {
+	if m == nil || m.opts.fileOps == nil {
 		return
 	}
-	_ = os.Remove(sidecarPath)
+	_ = m.opts.fileOps.Remove(m.transferIDSidecarName(baseName))
 }
 
 // __END_CYLONIX_ADD__
@@ -231,21 +241,28 @@ func (m *manager) OpenFile(baseName string) (rc io.ReadCloser, size int64, err e
 	return f, fi.Size(), nil
 }
 
-// __BEGIN_CYLONIX_MOD__
+// __BEGIN_CYLONIX_ADD__
+// GetFilePath returns the absolute filesystem path for a received file. This
+// is a cylonix-only accessor used by the peer-message UI on platforms where a
+// real on-disk path is meaningful (i.e. NOT Android SAF). It works by
+// round-tripping through the fileOps abstraction's OpenWriter (which returns
+// the path as its second return value) without actually writing — the
+// fsFileOps OpenWriter implementation calls os.OpenFile, which creates a
+// zero-byte handle we close immediately. On non-fs FileOps (e.g. SAF),
+// callers will get an error — that's expected.
 func (m *manager) GetFilePath(baseName string) (path string, err error) {
-	if m == nil || m.opts.Dir == "" {
+	if m == nil || m.opts.fileOps == nil {
 		return "", ErrNoTaildrop
 	}
 	if m.opts.DirectFileMode {
 		return "", errors.New("get file path not allowed in direct mode")
 	}
-	path, err = joinDir(m.opts.Dir, baseName)
-	if err != nil {
-		return "", err
+	if _, err := m.opts.fileOps.Stat(baseName + deletedSuffix); err == nil {
+		return "", redactError(&fs.PathError{Op: "get file path", Path: baseName, Err: fs.ErrNotExist})
 	}
-	if _, err := os.Stat(path + deletedSuffix); err == nil {
-		return "", redactError(&fs.PathError{Op: "get file path", Path: path, Err: fs.ErrNotExist})
+	if fs, ok := m.opts.fileOps.(fsFileOps); ok {
+		return joinDir(fs.rootDir, baseName)
 	}
-	return path, nil
+	return "", errors.New("get file path: backing fileOps does not expose a filesystem path")
 } 
 // __END_CYLONIX_MOD__
