@@ -707,7 +707,9 @@ func TestLoadCachedNetMap(t *testing.T) {
 	// stored, modulo uncached fields.
 	nm := clb.currentNode().NetMap()
 	if diff := cmp.Diff(nm, testMap,
-		cmpopts.IgnoreFields(netmap.NetworkMap{}, "Cached", "PacketFilter", "PacketFilterRules"),
+		cmpopts.IgnoreFields(netmap.NetworkMap{}, "Cached", "PacketFilter", "PacketFilterRules",
+			"L2DiscoveryRules", // CYLONIX_ADD: contains views.Slice with unexported fields
+		),
 		cmpopts.EquateComparable(key.NodePublic{}, key.MachinePublic{}),
 	); diff != "" {
 		t.Error(diff)

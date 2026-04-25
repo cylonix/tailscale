@@ -272,7 +272,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// CSRF is not required for GET, HEAD, or OPTIONS requests.
 		if slices.Contains([]string{"GET", "HEAD", "OPTIONS"}, r.Method) {
-			s.logf("csrf allowed: safe method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
+			s.safeLogf("csrf allowed: safe method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -282,11 +282,11 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		// served over HTTPS)
 		secFetchSite := r.Header.Get("Sec-Fetch-Site")
 		if secFetchSite == "same-origin" {
-			s.logf("csrf allowed: sec-fetch-site=%q method=%s path=%s remote=%s host=%s", secFetchSite, r.Method, r.URL.Path, r.RemoteAddr, r.Host)
+			s.safeLogf("csrf allowed: sec-fetch-site=%q method=%s path=%s remote=%s host=%s", secFetchSite, r.Method, r.URL.Path, r.RemoteAddr, r.Host)
 			h.ServeHTTP(w, r)
 			return
 		} else if secFetchSite != "" {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=sec-fetch-site=%q method=%s path=%s remote=%s host=%s origin=%q referer=%q",
 				secFetchSite, r.Method, r.URL.Path, r.RemoteAddr, r.Host,
 				r.Header.Get("Origin"), r.Header.Get("Referer"),
@@ -302,7 +302,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		// (use the override if set to allow for reverse proxying)
 		host := r.Host
 		if host == "" {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=no-host method=%s path=%s remote=%s origin=%q referer=%q",
 				r.Method, r.URL.Path, r.RemoteAddr,
 				r.Header.Get("Origin"), r.Header.Get("Referer"),
@@ -316,7 +316,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 
 		originHeader := r.Header.Get("Origin")
 		if originHeader == "" {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=no-origin method=%s path=%s remote=%s host=%s referer=%q",
 				r.Method, r.URL.Path, r.RemoteAddr, host,
 				r.Header.Get("Referer"),
@@ -326,7 +326,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		}
 		parsedOrigin, err := url.Parse(originHeader)
 		if err != nil {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=invalid-origin method=%s path=%s remote=%s host=%s origin=%q referer=%q",
 				r.Method, r.URL.Path, r.RemoteAddr, host, originHeader,
 				r.Header.Get("Referer"),
@@ -336,7 +336,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		}
 		origin := parsedOrigin.Host
 		if origin == "" {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=origin-no-host method=%s path=%s remote=%s host=%s origin=%q referer=%q",
 				r.Method, r.URL.Path, r.RemoteAddr, host, originHeader,
 				r.Header.Get("Referer"),
@@ -346,7 +346,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		}
 
 		if origin != host {
-			s.logf(
+			s.safeLogf(
 				"csrf rejected: reason=origin-mismatch method=%s path=%s remote=%s host=%s origin=%q referer=%q",
 				r.Method, r.URL.Path, r.RemoteAddr, host, origin,
 				r.Header.Get("Referer"),
@@ -354,7 +354,7 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 			http.Error(w, fmt.Sprintf("CSRF request denied with mismatched Origin %q and Host %q", origin, host), http.StatusForbidden)
 			return
 		}
-		s.logf("csrf allowed: origin-matches method=%s path=%s remote=%s origin=%v host=%s", r.Method, r.URL.Path, r.RemoteAddr, origin, host)
+		s.safeLogf("csrf allowed: origin-matches method=%s path=%s remote=%s origin=%v host=%s", r.Method, r.URL.Path, r.RemoteAddr, origin, host)
 
 		h.ServeHTTP(w, r)
 
@@ -376,9 +376,18 @@ func (s *Server) modeAPIHandler(mode ServerMode) (http.Handler, string) {
 }
 
 func (s *Server) Shutdown() {
-	s.logf("web.Server: shutting down")
+	s.safeLogf("web.Server: shutting down")
 	if s.assetsCleanup != nil {
 		s.assetsCleanup()
+	}
+}
+
+// CYLONIX_ADD: safeLogf logs via s.logf, falling back to a no-op when the
+// Server was constructed without going through NewServer (e.g. in tests
+// that build a bare *Server literal).
+func (s *Server) safeLogf(format string, args ...any) {
+	if s.logf != nil {
+		s.logf(format, args...)
 	}
 }
 
@@ -396,7 +405,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if s.mode == ManageServerMode {
-		s.logf("received request in manage mode: %s %s from %s host=%s", r.Method, r.URL.Path, r.RemoteAddr, r.Host)
+		s.safeLogf("received request in manage mode: %s %s from %s host=%s", r.Method, r.URL.Path, r.RemoteAddr, r.Host)
 		// In manage mode, requests must be sent directly to the bare Tailscale IP address.
 		// If a request comes in on any other hostname, redirect.
 		if s.requireTailscaleIP(w, r) {
@@ -405,7 +414,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 		// serve HTTP 204 on /ok requests as connectivity check
 		if r.Method == httpm.GET && r.URL.Path == "/ok" {
-			s.logf("responding to /ok request with HTTP 204 No Content")
+			s.safeLogf("responding to /ok request with HTTP 204 No Content")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -441,7 +450,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok := s.authorizeRequest(w, r); !ok {
-			s.logf("authorization failed for request: %s %s", r.Method, r.URL.Path)
+			s.safeLogf("authorization failed for request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "not authorized", http.StatusUnauthorized)
 			return
 		}
@@ -469,7 +478,7 @@ func (s *Server) requireTailscaleIP(w http.ResponseWriter, r *http.Request) (han
 
 	st, err := s.lc.StatusWithoutPeers(r.Context())
 	if err != nil {
-		s.logf("error getting status: %v", err)
+		s.safeLogf("error getting status: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return true
 	}
@@ -572,13 +581,13 @@ func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) (ok bo
 		// CYLONIX_MOD: log Synology auth errors for field debugging.
 		authorized, err := authorizeSynology(r)
 		if err != nil {
-			s.logf("authorizeSynology error: %v", err)
+			s.safeLogf("authorizeSynology error: %v", err)
 		}
 		return authorized
 	case distro.QNAP:
 		authorized, err := authorizeQNAP(r)
 		if err != nil {
-			s.logf("authorizeQNAP error: %v", err)
+			s.safeLogf("authorizeQNAP error: %v", err)
 		}
 		return authorized
 	default:
@@ -591,7 +600,7 @@ func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) (ok bo
 // which protects the handler using gorilla csrf.
 func (s *Server) serveLoginAPI(w http.ResponseWriter, r *http.Request) {
 	// CYLONIX_ADD: log every login API request for diagnostics.
-	s.logf("serveLoginAPI: %s %s", r.Method, r.URL.Path)
+	s.safeLogf("serveLoginAPI: %s %s", r.Method, r.URL.Path)
 	switch {
 	case r.URL.Path == "/api/data" && r.Method == httpm.GET:
 		s.serveGetNodeData(w, r)
@@ -1213,14 +1222,14 @@ func (s *Server) serveGetNodeData(w http.ResponseWriter, r *http.Request) {
 
 	cv, err := s.lc.CheckUpdate(r.Context())
 	if err != nil {
-		s.logf("could not check for updates: %v", err)
+		s.safeLogf("could not check for updates: %v", err)
 	} else {
 		data.ClientVersion = cv
 	}
 
 	profile, _, err := s.lc.ProfileStatus(r.Context())
 	if err != nil {
-		s.logf("error fetching profiles: %v", err)
+		s.safeLogf("error fetching profiles: %v", err)
 		// If for some reason we can't fetch profiles,
 		// continue to use st.CurrentTailnet if set.
 		if st.CurrentTailnet != nil {
@@ -1458,11 +1467,11 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 					ControlURLSet: true,
 				})
 				if err != nil {
-					s.logf("edit prefs: %v", err)
+					s.safeLogf("edit prefs: %v", err)
 				}
 			}
 			if err := s.lc.Start(ctx, ipnOptions); err != nil {
-				s.logf("start: %v", err)
+				s.safeLogf("start: %v", err)
 				startErrCh <- fmt.Errorf("start: %w", err)
 				cancelWatch()
 				return
@@ -1470,7 +1479,7 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 		}
 		if opt.Reauthenticate {
 			if err := s.lc.StartLoginInteractive(ctx); err != nil {
-				s.logf("startLogin: %v", err)
+				s.safeLogf("startLogin: %v", err)
 				startErrCh <- fmt.Errorf("start login interactive: %w", err)
 				cancelWatch()
 				return
@@ -1520,10 +1529,10 @@ type tailscaleUpOptions struct {
 func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
-	s.logf("serveTailscaleUp: %s %s", r.Method, r.URL.Path)
+	s.safeLogf("serveTailscaleUp: %s %s", r.Method, r.URL.Path)
 	st, err := s.lc.Status(r.Context())
 	if err != nil {
-		s.logf("tailscaleUp: status: %v", err)
+		s.safeLogf("tailscaleUp: status: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1531,18 +1540,18 @@ func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	var opt tailscaleUpOptions
 	type mi map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&opt); err != nil {
-		s.logf("tailscaleUp: decode request: %v", err)
+		s.safeLogf("tailscaleUp: decode request: %v", err)
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(mi{"error": err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	s.logf("tailscaleUp(reauth=%v) ...", opt.Reauthenticate)
+	s.safeLogf("tailscaleUp(reauth=%v) ...", opt.Reauthenticate)
 	url, err := s.tailscaleUp(r.Context(), st, opt)
-	s.logf("tailscaleUp = (URL %v, %v)", url != "", err)
+	s.safeLogf("tailscaleUp = (URL %v, %v)", url != "", err)
 	if err != nil {
-		s.logf("tailscaleUp: error: %v", err)
+		s.safeLogf("tailscaleUp: error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(mi{"error": err.Error()})
 		return
@@ -1552,7 +1561,7 @@ func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	} else {
 		io.WriteString(w, "{}")
 	}
-	s.logf("serveTailscaleUp DONE: %s %s", r.Method, r.URL.Path)
+	s.safeLogf("serveTailscaleUp DONE: %s %s", r.Method, r.URL.Path)
 }
 
 // serveDeviceDetailsClick increments the web_client_device_details_click metric
@@ -1576,17 +1585,17 @@ func (s *Server) serveUploadClientMetrics(w http.ResponseWriter, r *http.Request
 	localAPIURL := "http://" + apitype.LocalAPIHost + "/localapi" + path
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, localAPIURL, r.Body)
 	if err != nil {
-		s.logf("serveUploadClientMetrics: NewRequestWithContext error: %v %v", path, err)
+		s.safeLogf("serveUploadClientMetrics: NewRequestWithContext error: %v %v", path, err)
 		http.Error(w, "failed to construct request", http.StatusInternalServerError)
 		return
 	}
 	_, err = s.lc.DoLocalRequest(req)
 	if err != nil {
-		s.logf("serveUploadClientMetrics: DoLocalRequest error: %v %v", path, err)
+		s.safeLogf("serveUploadClientMetrics: DoLocalRequest error: %v %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.logf("serveUploadClientMetrics: successfully uploaded client metrics")
+	s.safeLogf("serveUploadClientMetrics: successfully uploaded client metrics")
 	io.WriteString(w, "{}")
 }
 // __END_CYLONIX_ADD__
@@ -1598,16 +1607,16 @@ func (s *Server) serveUploadClientMetrics(w http.ResponseWriter, r *http.Request
 func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/local")
 	if r.URL.Path == path { // missing prefix
-		s.logf("proxyRequestToLocalAPI: missing prefix in request path: %s", r.URL.Path)
+		s.safeLogf("proxyRequestToLocalAPI: missing prefix in request path: %s", r.URL.Path)
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
 	localAPIURL := "http://" + apitype.LocalAPIHost + "/localapi" + path
-	s.logf("proxyRequestToLocalAPI: %s %s", r.Method, localAPIURL)
+	s.safeLogf("proxyRequestToLocalAPI: %s %s", r.Method, localAPIURL)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, localAPIURL, r.Body)
 	if err != nil {
-		s.logf("proxyRequestToLocalAPI: NewRequestWithContext error: %v %v", path, err)
+		s.safeLogf("proxyRequestToLocalAPI: NewRequestWithContext error: %v %v", path, err)
 		http.Error(w, "failed to construct request", http.StatusInternalServerError)
 		return
 	}
@@ -1620,7 +1629,7 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		s.logf("proxyRequestToLocalAPI: DoLocalRequest error: %v status=%v err=%v", path, status, err)
+		s.safeLogf("proxyRequestToLocalAPI: DoLocalRequest error: %v status=%v err=%v", path, status, err)
 		http.Error(w, err.Error(), status)
 		return
 	}
@@ -1629,9 +1638,9 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 	// Send response back to web frontend.
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	s.logf("proxyRequestToLocalAPI: copying response body: %v, code=%v", path, resp.StatusCode)
+	s.safeLogf("proxyRequestToLocalAPI: copying response body: %v, code=%v", path, resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
-		s.logf("proxyRequestToLocalAPI: io.Copy error: %v %v", path, err)
+		s.safeLogf("proxyRequestToLocalAPI: io.Copy error: %v %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
