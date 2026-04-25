@@ -1345,6 +1345,19 @@ func (r *Resolver) respond(query []byte) ([]byte, error) {
 	return marshalResponse(resp)
 }
 
+// __BEGIN_CYLONIX_ADD__
+
+// ResetDNSClientCache resets the DNS client's cache.
+func (r *Resolver) ResetDNSClientCache() {
+	r.forwarder.ResetDNSClientCache()
+}
+
+func (r *Resolver) SetLinkSelector(linkSel ForwardLinkSelector) {
+	r.forwarder.SetLinkSelector(linkSel)
+}
+
+// __END_CYLONIX_ADD__
+
 // unARPA maps from "4.4.8.8.in-addr.arpa." to "8.8.4.4", etc.
 func unARPA(a string) (ipStr string, ok bool) {
 	const suf4 = ".in-addr.arpa."

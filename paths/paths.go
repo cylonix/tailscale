@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"tailscale.com/syncs"
 	"tailscale.com/version/distro"
@@ -34,17 +37,17 @@ func DefaultTailscaledSocket() string {
 	switch distro.Get() {
 	case distro.Synology:
 		if distro.DSMVersion() == 6 {
-			return "/var/packages/Tailscale/etc/tailscaled.sock"
+			return "/var/packages/Cylonix/etc/cylonixd.sock" // __CYLONIX_MOD__
 		}
 		// DSM 7 (and higher? or failure to detect.)
-		return "/var/packages/Tailscale/var/tailscaled.sock"
+		return "/var/packages/Cylonix/var/cylonixd.sock" // __CYLONIX_MOD__
 	case distro.Gokrazy:
 		return "/perm/tailscaled/tailscaled.sock"
 	case distro.QNAP:
 		return "/tmp/tailscale/tailscaled.sock"
 	}
 	if fi, err := os.Stat("/var/run"); err == nil && fi.IsDir() {
-		return "/var/run/tailscale/tailscaled.sock"
+		return "/var/run/cylonix/cylonixd.sock" // __CYLONIX_MOD__
 	}
 	return "tailscaled.sock"
 }
@@ -66,7 +69,8 @@ func DefaultTailscaledStateFile() string {
 		return f()
 	}
 	if runtime.GOOS == "windows" {
-		return filepath.Join(os.Getenv("ProgramData"), "Tailscale", "server-state.conf")
+		_, programName := GetWindowsProgramName() // __CYLONIX_MOD__
+		return filepath.Join(os.Getenv("ProgramData"), programName, "server-state.conf") // __CYLONIX_MOD__
 	}
 	return ""
 }
@@ -122,3 +126,24 @@ func LegacyStateFilePath() string {
 	}
 	return ""
 }
+
+// __BEGIN CYLONIX_MOD__
+func GetWindowsProgramName() (name, capitalized string) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "cylonix", "Cylonix"
+	}
+	baseName := filepath.Base(exe)
+	name = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	if strings.HasSuffix(name, "d") {
+		name = name[:len(name)-1]
+	}
+	capitalized = name
+	r, size := utf8.DecodeRuneInString(name)
+	if r != utf8.RuneError {
+		capitalized = string(unicode.ToUpper(r)) + name[size:]
+	}
+	return
+}
+
+// __END CYLONIX_MOD__

@@ -85,7 +85,7 @@ func defaultTunName() string {
 		if buildfeatures.HasSynology && buildfeatures.HasNetstack && distro.Get() == distro.Synology {
 			// Try TUN, but fall back to userspace networking if needed.
 			// See https://github.com/tailscale/tailscale-synology/issues/35
-			return "tailscale0,userspace-networking"
+			return "cylonix0,userspace-networking" // __CYLONIX_MOD__
 		}
 	}
 	return "tailscale0"
@@ -376,6 +376,11 @@ func ipnServerOpts() (o serverOptions) {
 		if dir := filepath.Dir(args.statepath); strings.EqualFold(filepath.Base(dir), "tailscale") {
 			o.VarRoot = dir
 		}
+		// __BEGIN CYLONIX_MOD__
+		if dir := filepath.Dir(args.statepath); strings.EqualFold(filepath.Base(dir), "cylonix") {
+			o.VarRoot = dir
+		}
+		// __END CYLONIX_MOD__
 	}
 	if strings.HasPrefix(statePathOrDefault(), "mem:") {
 		// Register as an ephemeral node.
@@ -901,6 +906,32 @@ func applyIntegrationTestEnvKnob() {
 			envknob.Setenv(k, v)
 		}
 	}
+}
+
+// CYLONIX_ADD: parseFlags re-parses the given flag arguments through the global
+// flag set. This is used by subprocess respawning paths (mobile platforms)
+// where flags may be received after the initial Parse. NOTE: in v1.96.4 the
+// root flag handling has moved into different code paths; this helper is
+// retained for compatibility with cylonix call sites that may still use it.
+func parseFlags(flagArgs []string) error {
+	if len(flagArgs) <= 0 {
+		return nil
+	}
+	// Temporarily replace os.Args with just the program name + flags.
+	savedArgs := os.Args
+	os.Args = append([]string{os.Args[0]}, flagArgs...)
+
+	// Re-parse using the global flags.
+	flag.CommandLine.Parse(flagArgs)
+
+	// Restore os.Args.
+	os.Args = savedArgs
+
+	log.Printf("Subprocess re-parsed %d flags: %v", len(flagArgs), flagArgs)
+	log.Printf("Active config: port=%d, tun=%s, socket=%s",
+		args.port, args.tunname, args.socketpath)
+
+	return nil
 }
 
 // handleTPMFlags validates the --encrypt-state and --hardware-attestation flags

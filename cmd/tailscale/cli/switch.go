@@ -19,13 +19,15 @@ import (
 )
 
 var switchCmd = &ffcli.Command{
+	// CYLONIX_MOD: rebrand "tailscale" -> "cylonix" in user-visible
+	// usage/help text but preserve upstream's `--list [--json]` form.
 	Name: "switch",
 	ShortUsage: strings.Join([]string{
-		"tailscale switch <id>",
-		"tailscale switch --list [--json]",
+		"cylonix switch <id>",
+		"cylonix switch --list [--json]",
 	}, "\n"),
-	ShortHelp: "Switch to a different Tailscale account",
-	LongHelp: `"tailscale switch" switches between logged in accounts. You can
+	ShortHelp: "Switch to a different Cylonix account",
+	LongHelp: `"cylonix switch" switches between logged in accounts. You can
 use the ID that's returned from 'tailnet switch -list'
 to pick which profile you want to switch to. Alternatively, you
 can use the Tailnet, account names, or display names to switch as well.

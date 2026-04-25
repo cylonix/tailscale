@@ -12,6 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	// CYLONIX_ADD: imports for taildrop, package-policy logging, and
+	// multipart upload helpers used by handlers below.
+	"log"
+	"maps"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/netip"
@@ -88,6 +94,10 @@ var handler = map[string]LocalAPIHandler{
 	"start":                (*Handler).serveStart,
 	"status":               (*Handler).serveStatus,
 	"whois":                (*Handler).serveWhoIs,
+	// CYLONIX_ADD: cylonix-only LocalAPI endpoints.
+	"cap":     (*Handler).serveCap,
+	"envknob": (*Handler).serveEnvknob,
+	"log":     (*Handler).serveLog,
 }
 
 func init() {
@@ -879,8 +889,10 @@ func (h *Handler) serveWatchIPNBus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Transfer-Encoding", "identity") // __CYLONIX_MOD__
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
+	h.logf("watch-ipn-bus: starting watch with mask %d", mask)
 	h.b.WatchNotificationsAs(ctx, h.Actor, mask, f.Flush, func(roNotify *ipn.Notify) (keepGoing bool) {
 		err := enc.Encode(roNotify)
 		if err != nil {
@@ -1028,6 +1040,13 @@ func (h *Handler) serveCheckPrefs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
+// CYLONIX_NOTE: in v1.96.4 the LocalAPI /files/ handlers (serveFiles +
+// associated outgoing-files cylonix mod) live in feature/taildrop/localapi.go.
+// LocalBackend no longer exposes WaitingFiles/AwaitWaitingFiles/DeleteFile
+// /OpenFile/OutgoingFiles directly. Cylonix's "?outgoing" listing mode and
+// the OutgoingFiles accessor will need to be re-applied to the taildrop
+// extension.
+
 // WriteErrorJSON writes a JSON object (with a single "error" string field) to w
 // with the given error. If err is nil, "unexpected nil error" is used for the
 // stringification instead.
@@ -1042,6 +1061,14 @@ func WriteErrorJSON(w http.ResponseWriter, err error) {
 	}
 	json.NewEncoder(w).Encode(E{err.Error()})
 }
+
+// CYLONIX_NOTE: a large block of cylonix-side taildrop helpers
+// (serveFileTargets, serveFilePut, multipart upload streaming, progress
+// reporting, and the cylonix transferID plumbing) used to live here. In
+// v1.96.4 these moved into feature/taildrop/localapi.go. The cylonix
+// extensions (e.g. transferID propagation that the post-tag commits add)
+// will need to be re-applied to the feature/taildrop equivalents during
+// cherry-pick.
 
 func (h *Handler) serveSetDNS(w http.ResponseWriter, r *http.Request) {
 	if !h.PermitWrite {
@@ -1729,3 +1756,175 @@ func (h *Handler) serveGetAppcRouteInfo(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
+// CYLONIX_ADD: cylonix-only LocalAPI handlers below. They depend on
+// LocalBackend extensions (AddDelNodeCapability, ResetDNSClientCache,
+// SetDevStateStore, ControlKnobs, DebugRebind, DebugReSTUN, etc.) plus
+// the SendDNSToExitNodeInTunnelKey / AlwaysUseRelayEnabledKey state-store
+// keys. Some of these are present (control knobs, ResetDNSClientCache);
+// any that are missing on v1.96.4 will be re-added by post-tag cylonix
+// commits during cherry-pick.
+func (h *Handler) serveEnvknob(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitRead {
+		http.Error(w, "envknobs access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.GET && r.Method != httpm.POST {
+		http.Error(w, "use GET or POST", http.StatusMethodNotAllowed)
+		return
+	}
+	env := r.FormValue("env")
+	if env == "" {
+		http.Error(w, "missing 'env' parameter", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == httpm.POST {
+		kvs, err := ParseKeyValue(env)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error parsing arguments: %v", err), http.StatusBadRequest)
+			return
+		}
+		h.logf("Set env knob: %v", kvs)
+		for k, v := range kvs {
+			envknob.Setenv(k, v)
+		}
+		// Some env knobs need follow up actions
+		if v, ok := kvs["TS_DEBUG_ALWAYS_USE_DERP"]; ok {
+			if err := h.onEnvknobSetAlwaysUseRelay(v); err != nil {
+				http.Error(w, fmt.Sprintf("Error setting TS_DEBUG_ALWAYS_USE_DERP: %v", err), http.StatusInternalServerError)
+				return
+			}
+			h.logf("TS_DEBUG_ALWAYS_USE_DERP set to %v", v)
+		}
+		if v, ok := kvs["TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL"]; ok {
+			on, err := strconv.ParseBool(v)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error parsing TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if err := h.b.SetDevStateStore(string(ipn.SendDNSToExitNodeInTunnelKey), v); err != nil {
+				http.Error(w, fmt.Sprintf("Error storing TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL state: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			knobs := h.b.ControlKnobs()
+			if knobs == nil {
+				http.Error(w, "Failed to set TS_DEBUG_SEND_DNS_TO_EXIT_NODE_IN_TUNNEL: nil control knobss", http.StatusInternalServerError)
+				return
+			}
+			knobs.SendDNSToExitNodeInTunnel.Store(on)
+			h.logf("Calling Resetting DNS Client cache")
+			h.b.ResetDNSClientCache()
+			h.logf("SendDNSToExitNodeInTunnel knob is set to %v", on)
+		}
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+	h.logf("Get env knob: %v", env)
+	w.Header().Set("Content-Type", "application/json")
+	value := os.Getenv(env)
+	json.NewEncoder(w).Encode(map[string]string{
+		"env": value,
+	})
+}
+
+func ParseKeyValue(s string) (map[string]string, error) {
+	result := make(map[string]string)
+
+	// Handle empty string
+	if s == "" {
+		return result, nil
+	}
+
+	// Try JSON first
+	if err := json.Unmarshal([]byte(s), &result); err == nil {
+		return result, nil
+	}
+
+	// Fallback to key=value format
+	pairs := strings.Split(s, ",")
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key-value pair: %s", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		result[key] = value
+	}
+
+	return result, nil
+}
+
+func (h *Handler) onEnvknobSetAlwaysUseRelay(setting string) error {
+	on, err := strconv.ParseBool(setting)
+	if err != nil {
+		return fmt.Errorf("failed to parse setting '%q': %w", setting, err)
+	}
+	if err := h.b.SetDevStateStore(string(ipn.AlwaysUseRelayEnabledKey), setting); err != nil {
+		return fmt.Errorf("failed to store state: %w", err)
+	}
+	h.logf("Rebinding for alwaysUserRelay(%v)", on)
+	if err := h.b.DebugRebind(); err != nil {
+		return fmt.Errorf("failed to rebind for alwaysUserRelay(%v): %w", on, err)
+	}
+	h.logf("Rebinding DONE. Re-stunning for alwaysUserRelay(%v)", on)
+	if err := h.b.DebugReSTUN(); err != nil {
+		return fmt.Errorf("failed to re-stun for alwaysUserRelay(%v): %w", on, err)
+	}
+	h.logf("Re-stunning DONE for alwaysUserRelay(%v)", on)
+	return nil
+}
+
+func (h *Handler) serveLog(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "log access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	body := io.LimitReader(r.Body, 1024) // 1KB log entry limit.
+	logData, err := io.ReadAll(body)
+	if err != nil {
+		http.Error(w, "reading log data: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(logData) == 0 {
+		http.Error(w, "empty log data", http.StatusBadRequest)
+		return
+	}
+	log.Printf("APP: %q", string(logData))
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) serveCap(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "cap access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	cap := r.FormValue("cap")
+	if cap == "" {
+		http.Error(w, "missing 'cap' parameter", http.StatusBadRequest)
+		return
+	}
+	op := r.FormValue("op")
+	if op == "" {
+		http.Error(w, "missing 'op' parameter", http.StatusBadRequest)
+		return
+	}
+	if err := h.b.AddDelNodeCapability(tailcfg.NodeCapability(cap), op); err != nil {
+		http.Error(w, "Failed to "+op+" '"+cap+"': "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Cap %v '%v' success", op, cap)
+	w.WriteHeader(http.StatusOK)
+}
+
+// (CYLONIX_ADD block ends.)
+>

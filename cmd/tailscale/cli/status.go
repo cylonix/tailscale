@@ -28,8 +28,8 @@ import (
 
 var statusCmd = &ffcli.Command{
 	Name:       "status",
-	ShortUsage: "tailscale status [--active] [--web] [--json]",
-	ShortHelp:  "Show state of tailscaled and its connections",
+	ShortUsage: "cylonix status [--active] [--web] [--json]",
+	ShortHelp:  "Show state of cylonixd and its connections",
 	LongHelp: strings.TrimSpace(`
 
 JSON FORMAT
@@ -39,10 +39,10 @@ in the future.
 
 For a description of the fields, see the "type Status" declaration at:
 
-https://github.com/tailscale/tailscale/blob/main/ipn/ipnstate/ipnstate.go
+https://github.com/cylonix/tailscale/blob/main/ipn/ipnstate/ipnstate.go
 
 (and be sure to select branch/tag that corresponds to the version
- of Tailscale you're running)
+ of Cylonix you're running)
 
 `),
 	Exec: runStatus,
@@ -75,7 +75,7 @@ const mullvadTCD = "mullvad.ts.net."
 
 func runStatus(ctx context.Context, args []string) error {
 	if len(args) > 0 {
-		return errors.New("unexpected non-flag arguments to 'tailscale status'")
+		return errors.New("unexpected non-flag arguments to 'cylonix status'")
 	}
 	getStatus := localClient.Status
 	if !statusArgs.peers {
@@ -106,7 +106,7 @@ func runStatus(ctx context.Context, args []string) error {
 			return err
 		}
 		statusURL := netmon.HTTPOfListener(ln)
-		printf("Serving Tailscale status at %v ...\n", statusURL)
+		printf("Serving Cylonix status at %v ...\n", statusURL)
 		go func() {
 			<-ctx.Done()
 			ln.Close()
@@ -264,7 +264,7 @@ func isRunningOrStarting(st *ipnstate.Status) (description string, ok bool) {
 	default:
 		return fmt.Sprintf("unexpected state: %s", st.BackendState), false
 	case ipn.Stopped.String():
-		return "Tailscale is stopped.", false
+		return "Cylonix is stopped.", false
 	case ipn.NeedsLogin.String():
 		s := "Logged out."
 		if st.AuthURL != "" {
@@ -272,7 +272,7 @@ func isRunningOrStarting(st *ipnstate.Status) (description string, ok bool) {
 		}
 		return s, false
 	case ipn.NeedsMachineAuth.String():
-		return "Machine is not yet approved by tailnet admin.", false
+		return "Machine is not yet approved by mesh network admin.", false
 	case ipn.Running.String(), ipn.Starting.String():
 		return st.BackendState, true
 	}

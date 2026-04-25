@@ -135,7 +135,13 @@ require (
 	sigs.k8s.io/kind v0.30.0
 	sigs.k8s.io/yaml v1.6.0
 	software.sslmate.com/src/go-pkcs12 v0.4.0
+
+	// CYLONIX_ADD: prebuilt web client and xray-core for DERP underlay
+	github.com/cylonix/cylonix-web-client-prebuilt v0.1.4
+	github.com/xtls/xray-core v1.260204.0
 )
+
+//replace github.com/cylonix/cylonix-web-client-prebuilt v0.1.3 => ./cylonix-web-client-prebuilt
 
 require (
 	9fans.net/go v0.0.8-0.20250307142834-96bdba94b63f // indirect

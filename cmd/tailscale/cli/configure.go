@@ -19,11 +19,11 @@ var (
 func configureCmd() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "configure",
-		ShortUsage: "tailscale configure <subcommand>",
-		ShortHelp:  "Configure the host to enable more Tailscale features",
+		ShortUsage: "cylonix configure <subcommand>",
+		ShortHelp:  "Configure the host to enable more Cylonix features",
 		LongHelp: strings.TrimSpace(`
 The 'configure' set of commands are intended to provide a way to enable different
-services on the host to use Tailscale in more ways.
+services on the host to use Cylonix in more ways.
 `),
 		FlagSet: (func() *flag.FlagSet {
 			fs := newFlagSet("configure")

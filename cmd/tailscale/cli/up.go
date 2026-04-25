@@ -46,15 +46,15 @@ import (
 
 var upCmd = &ffcli.Command{
 	Name:       "up",
-	ShortUsage: "tailscale up [flags]",
-	ShortHelp:  "Connect to Tailscale, logging in if needed",
+	ShortUsage: "cylonix up [flags]",
+	ShortHelp:  "Connect to Cylonix, logging in if needed",
 
 	LongHelp: strings.TrimSpace(`
-"tailscale up" connects this machine to your Tailscale network,
+"cylonix up" connects this machine to your Cylonix network,
 triggering authentication if necessary.
 
-With no flags, "tailscale up" brings the network online without
-changing any settings. (That is, it's the opposite of "tailscale
+With no flags, "cylonix up" brings the network online without
+changing any settings. (That is, it's the opposite of "cylonix
 down").
 
 If flags are specified, the flags must be the complete set of desired
@@ -108,20 +108,24 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
 	upf.StringVar(&upArgs.server, "login-server", ipn.DefaultControlURL, "base URL of control server")
 	upf.BoolVar(&upArgs.acceptRoutes, "accept-routes", acceptRouteDefault(goos), "accept routes advertised by other Tailscale nodes")
 	upf.BoolVar(&upArgs.acceptDNS, "accept-dns", true, "accept DNS configuration from the admin panel")
-	upf.Var(notFalseVar{}, "host-routes", hidden+"install host routes to other Tailscale nodes (must be true as of Tailscale 1.67+)")
-	upf.StringVar(&upArgs.exitNodeIP, "exit-node", "", "Tailscale exit node (IP, base name, or auto:any) for internet traffic, or empty string to not use an exit node")
+	// CYLONIX_MOD: rebrand "Tailscale" -> "Cylonix" in --host-routes and
+	// --exit-node descriptions; keep upstream's auto:any selector.
+	upf.Var(notFalseVar{}, "host-routes", hidden+"install host routes to other Cylonix nodes (must be true as of Tailscale 1.67+)")
+	upf.StringVar(&upArgs.exitNodeIP, "exit-node", "", "Cylonix exit node (IP, base name, or auto:any) for internet traffic, or empty string to not use an exit node")
 	upf.BoolVar(&upArgs.exitNodeAllowLANAccess, "exit-node-allow-lan-access", false, "Allow direct access to the local network when routing traffic via an exit node")
 	upf.BoolVar(&upArgs.shieldsUp, "shields-up", false, "don't allow incoming connections")
-	upf.BoolVar(&upArgs.runSSH, "ssh", false, "run an SSH server, permitting access per tailnet admin's declared policy")
+	upf.BoolVar(&upArgs.runSSH, "ssh", false, "run an SSH server, permitting access per mesh network admin's declared policy")
 	upf.StringVar(&upArgs.advertiseTags, "advertise-tags", "", "comma-separated ACL tags to request; each must start with \"tag:\" (e.g. \"tag:eng,tag:montreal,tag:ssh\")")
 	upf.StringVar(&upArgs.hostname, "hostname", "", "hostname to use instead of the one provided by the OS")
 	upf.StringVar(&upArgs.advertiseRoutes, "advertise-routes", "", "routes to advertise to other nodes (comma-separated, e.g. \"10.0.0.0/8,192.168.0.0/24\") or empty string to not advertise routes")
 	upf.BoolVar(&upArgs.advertiseConnector, "advertise-connector", false, "advertise this node as an app connector")
-	upf.BoolVar(&upArgs.advertiseDefaultRoute, "advertise-exit-node", false, "offer to be an exit node for internet traffic for the tailnet")
+	// CYLONIX_MOD: rebrand "tailnet" -> "mesh network" and keep upstream's
+	// --report-posture flag (cylonix's "posture-checking" name was renamed).
+	upf.BoolVar(&upArgs.advertiseDefaultRoute, "advertise-exit-node", false, "offer to be an exit node for internet traffic for the mesh network")
 	upf.BoolVar(&upArgs.postureChecking, "report-posture", false, hidden+"allow management plane to gather device posture information")
 
 	if safesocket.GOOSUsesPeerCreds(goos) {
-		upf.StringVar(&upArgs.opUser, "operator", "", "Unix username to allow to operate on tailscaled without sudo")
+		upf.StringVar(&upArgs.opUser, "operator", "", "Unix username to allow to operate on cylonixd without sudo")
 	}
 	switch goos {
 	case "linux":
@@ -129,9 +133,9 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
 		upf.BoolVar(&upArgs.statefulFiltering, "stateful-filtering", false, "apply stateful filtering to forwarded packets (subnet routers, exit nodes, and so on)")
 		upf.StringVar(&upArgs.netfilterMode, "netfilter-mode", defaultNetfilterMode(), "netfilter mode (one of on, nodivert, off)")
 	case "windows":
-		upf.BoolVar(&upArgs.forceDaemon, "unattended", false, "run in \"Unattended Mode\" where Tailscale keeps running even after the current GUI user logs out (Windows-only)")
+		upf.BoolVar(&upArgs.forceDaemon, "unattended", false, "run in \"Unattended Mode\" where Cylonix keeps running even after the current GUI user logs out (Windows-only)")
 	}
-	upf.DurationVar(&upArgs.timeout, "timeout", 0, "maximum amount of time to wait for tailscaled to enter a Running state; default (0s) blocks forever")
+	upf.DurationVar(&upArgs.timeout, "timeout", 0, "maximum amount of time to wait for cylonixd to enter a Running state; default (0s) blocks forever")
 
 	if cmd == "login" {
 		upf.StringVar(&upArgs.profileName, "nickname", "", "short name for the account")
@@ -144,7 +148,8 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
 
 		// There's no --force-reauth flag on "login" because all login commands
 		// trigger a reauth.
-		upf.BoolVar(&upArgs.forceReauth, "force-reauth", false, "force reauthentication (WARNING: this may bring down the Tailscale connection and thus should not be done remotely over SSH or RDP)")
+		// CYLONIX_MOD: rebrand "Tailscale" -> "Cylonix" in description.
+		upf.BoolVar(&upArgs.forceReauth, "force-reauth", false, "force reauthentication (WARNING: this may bring down the Cylonix connection and thus should not be done remotely over SSH or RDP)")
 		registerAcceptRiskFlag(upf, &upArgs.acceptedRisks)
 	}
 
@@ -445,7 +450,8 @@ func updatePrefs(prefs, curPrefs *ipn.Prefs, env upCheckEnv) (simpleUp bool, jus
 	}
 
 	if env.upArgs.forceReauth && isSSHOverTailscale() {
-		if err := presentRiskToUser(riskLoseSSH, `You are connected over Tailscale; this action may result in your SSH session disconnecting.`, env.upArgs.acceptedRisks); err != nil {
+		// CYLONIX_MOD: rebrand "Tailscale" -> "Cylonix" in SSH-loss warning.
+		if err := presentRiskToUser(riskLoseSSH, `You are connected over Cylonix; this action may result in your SSH session disconnecting.`, env.upArgs.acceptedRisks); err != nil {
 			return false, nil, err
 		}
 	}
@@ -482,9 +488,9 @@ func presentSSHToggleRisk(wantSSH, haveSSH bool, acceptedRisks string) error {
 		return nil
 	}
 	if wantSSH {
-		return presentRiskToUser(riskLoseSSH, `You are connected over Tailscale; this action will reroute SSH traffic to Tailscale SSH and will result in your session disconnecting.`, acceptedRisks)
+		return presentRiskToUser(riskLoseSSH, `You are connected over Cylonix; this action will reroute SSH traffic to Cylonix SSH and will result in your session disconnecting.`, acceptedRisks)
 	}
-	return presentRiskToUser(riskLoseSSH, `You are connected using Tailscale SSH; this action will result in your session disconnecting.`, acceptedRisks)
+	return presentRiskToUser(riskLoseSSH, `You are connected using Cylonix SSH; this action will result in your session disconnecting.`, acceptedRisks)
 }
 
 func runUp(ctx context.Context, cmd string, args []string, upArgs upArgsT) (retErr error) {
@@ -802,7 +808,7 @@ func runUp(ctx context.Context, cmd string, args []string, upArgs upArgsT) (retE
 		}
 		return err
 	case <-timeoutCh:
-		return errors.New(`timeout waiting for Tailscale service to enter a Running state; check health with "tailscale status"`)
+		return errors.New(`timeout waiting for Cylonix service to enter a Running state; check health with "cylonix status"`)
 	}
 }
 
@@ -950,12 +956,11 @@ func updateMaskedPrefsFromUpOrSetFlag(mp *ipn.MaskedPrefs, flagName string) {
 	panic(fmt.Sprintf("internal error: unhandled flag %q", flagName))
 }
 
-const accidentalUpPrefix = "Error: changing settings via 'tailscale up' requires mentioning all\n" +
+const accidentalUpPrefix = "Error: changing settings via 'cylonix up' requires mentioning all\n" +
 	"non-default flags. To proceed, either re-run your command with --reset or\n" +
 	"use the command below to explicitly mention the current value of\n" +
 	"all non-default settings:\n\n" +
-	"\ttailscale up"
-
+	"\tcylonix up"
 // upCheckEnv are extra parameters describing the environment as
 // needed by checkForAccidentalSettingReverts and friends.
 type upCheckEnv struct {

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath" // CYLONIX_ADD: used by file-listing helpers below.
 	"slices"
 	"strings"
 	"sync"
@@ -46,6 +47,35 @@ import (
 // ListenPort is the static port used for the web client when run inside tailscaled.
 // (5252 are the numbers above the letters "TSTS" on a qwerty keyboard.)
 const ListenPort = 5252
+
+// __BEGIN_CYLONIX_ADD__
+const (
+	// cylonixdLogSynologyPath is the Synology log file path for the cylonixd service.
+	cylonixdLogSynologyPath = "/var/packages/Cylonix/var/cylonixd.stdout.log"
+	// cylonixdLogQNAPDefaultPath is the fallback QNAP log file path for the cylonixd service.
+	// This is only used if QPKG_ROOT and CYLONIXD_LOG_PATH are not available.
+	cylonixdLogQNAPDefaultPath = "/share/CACHEDEV1_DATA/.qpkg/Cylonix/var/cylonixd.stdout.log"
+	// cylonixdLogQNAPEnvPath is the env var override for the QNAP cylonixd log path.
+	cylonixdLogQNAPEnvPath = "CYLONIXD_LOG_PATH"
+	// cylonixdLogQNAPEnvRoot is the env var to infer the QPKG root on QNAP.
+	cylonixdLogQNAPEnvRoot = "QPKG_ROOT"
+	// cylonixdLogMaxBytes is the maximum number of bytes to return from the log.
+	cylonixdLogMaxBytes = 64 * 1024
+	// cylonixdLogDownloadMaxBytes allows a larger payload for the download endpoint.
+	cylonixdLogDownloadMaxBytes = 512 * 1024
+)
+
+func qnapCylonixdLogPath() string {
+	if path := strings.TrimSpace(os.Getenv(cylonixdLogQNAPEnvPath)); path != "" {
+		return path
+	}
+	if root := strings.TrimSpace(os.Getenv(cylonixdLogQNAPEnvRoot)); root != "" {
+		return filepath.Join(root, "var", "cylonixd.stdout.log")
+	}
+	return cylonixdLogQNAPDefaultPath
+}
+
+// __END_CYLONIX_ADD__
 
 // Server is the backend server for a Tailscale web client.
 type Server struct {
@@ -236,10 +266,13 @@ func NewServer(opts ServerOpts) (s *Server, err error) {
 	return s, nil
 }
 
+// CYLONIX_MOD: extra verbose logging on each CSRF allow/reject decision so
+// that mobile/embedded UI integrations can be debugged in the field.
 func (s *Server) csrfProtect(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// CSRF is not required for GET, HEAD, or OPTIONS requests.
 		if slices.Contains([]string{"GET", "HEAD", "OPTIONS"}, r.Method) {
+			s.logf("csrf allowed: safe method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -249,9 +282,15 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		// served over HTTPS)
 		secFetchSite := r.Header.Get("Sec-Fetch-Site")
 		if secFetchSite == "same-origin" {
+			s.logf("csrf allowed: sec-fetch-site=%q method=%s path=%s remote=%s host=%s", secFetchSite, r.Method, r.URL.Path, r.RemoteAddr, r.Host)
 			h.ServeHTTP(w, r)
 			return
 		} else if secFetchSite != "" {
+			s.logf(
+				"csrf rejected: reason=sec-fetch-site=%q method=%s path=%s remote=%s host=%s origin=%q referer=%q",
+				secFetchSite, r.Method, r.URL.Path, r.RemoteAddr, r.Host,
+				r.Header.Get("Origin"), r.Header.Get("Referer"),
+			)
 			http.Error(w, fmt.Sprintf("CSRF request denied with Sec-Fetch-Site %q", secFetchSite), http.StatusForbidden)
 			return
 		}
@@ -263,6 +302,11 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 		// (use the override if set to allow for reverse proxying)
 		host := r.Host
 		if host == "" {
+			s.logf(
+				"csrf rejected: reason=no-host method=%s path=%s remote=%s origin=%q referer=%q",
+				r.Method, r.URL.Path, r.RemoteAddr,
+				r.Header.Get("Origin"), r.Header.Get("Referer"),
+			)
 			http.Error(w, "CSRF request denied with no Host header", http.StatusForbidden)
 			return
 		}
@@ -272,24 +316,45 @@ func (s *Server) csrfProtect(h http.Handler) http.Handler {
 
 		originHeader := r.Header.Get("Origin")
 		if originHeader == "" {
+			s.logf(
+				"csrf rejected: reason=no-origin method=%s path=%s remote=%s host=%s referer=%q",
+				r.Method, r.URL.Path, r.RemoteAddr, host,
+				r.Header.Get("Referer"),
+			)
 			http.Error(w, "CSRF request denied with no Origin header", http.StatusForbidden)
 			return
 		}
 		parsedOrigin, err := url.Parse(originHeader)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("CSRF request denied with invalid Origin %q", r.Header.Get("Origin")), http.StatusForbidden)
+			s.logf(
+				"csrf rejected: reason=invalid-origin method=%s path=%s remote=%s host=%s origin=%q referer=%q",
+				r.Method, r.URL.Path, r.RemoteAddr, host, originHeader,
+				r.Header.Get("Referer"),
+			)
+			http.Error(w, fmt.Sprintf("CSRF request denied with invalid Origin %q", originHeader), http.StatusForbidden)
 			return
 		}
 		origin := parsedOrigin.Host
 		if origin == "" {
+			s.logf(
+				"csrf rejected: reason=origin-no-host method=%s path=%s remote=%s host=%s origin=%q referer=%q",
+				r.Method, r.URL.Path, r.RemoteAddr, host, originHeader,
+				r.Header.Get("Referer"),
+			)
 			http.Error(w, "CSRF request denied with no host in the Origin header", http.StatusForbidden)
 			return
 		}
 
 		if origin != host {
+			s.logf(
+				"csrf rejected: reason=origin-mismatch method=%s path=%s remote=%s host=%s origin=%q referer=%q",
+				r.Method, r.URL.Path, r.RemoteAddr, host, origin,
+				r.Header.Get("Referer"),
+			)
 			http.Error(w, fmt.Sprintf("CSRF request denied with mismatched Origin %q and Host %q", origin, host), http.StatusForbidden)
 			return
 		}
+		s.logf("csrf allowed: origin-matches method=%s path=%s remote=%s origin=%v host=%s", r.Method, r.URL.Path, r.RemoteAddr, origin, host)
 
 		h.ServeHTTP(w, r)
 
@@ -331,6 +396,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if s.mode == ManageServerMode {
+		s.logf("received request in manage mode: %s %s from %s host=%s", r.Method, r.URL.Path, r.RemoteAddr, r.Host)
 		// In manage mode, requests must be sent directly to the bare Tailscale IP address.
 		// If a request comes in on any other hostname, redirect.
 		if s.requireTailscaleIP(w, r) {
@@ -339,6 +405,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 		// serve HTTP 204 on /ok requests as connectivity check
 		if r.Method == httpm.GET && r.URL.Path == "/ok" {
+			s.logf("responding to /ok request with HTTP 204 No Content")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -347,7 +414,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			// This hash corresponds to the inline script in index.html that runs when the react app is unavailable.
 			// It was generated from https://csplite.com/csp/sha/.
 			// If the contents of the script are changed, this hash must be updated.
-			const indexScriptHash = "sha384-CW2AYVfS14P7QHZN27thEkMLKiCj3YNURPoLc1elwiEkMVHeuYTWkJOEki1F3nZc"
+			const indexScriptHash = "sha384-bYmT2MZuS0uK7jbeccfeMnkUIMk8lWUTS7wHYXmf7ja0z3DpgO7RMhJW3uGtnEC8"
 
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src * data:; script-src 'self' '"+indexScriptHash+"'")
@@ -374,6 +441,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok := s.authorizeRequest(w, r); !ok {
+			s.logf("authorization failed for request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "not authorized", http.StatusUnauthorized)
 			return
 		}
@@ -501,10 +569,17 @@ func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) (ok bo
 			// Synology support not built in.
 			return false
 		}
-		authorized, _ := authorizeSynology(r)
+		// CYLONIX_MOD: log Synology auth errors for field debugging.
+		authorized, err := authorizeSynology(r)
+		if err != nil {
+			s.logf("authorizeSynology error: %v", err)
+		}
 		return authorized
 	case distro.QNAP:
-		authorized, _ := authorizeQNAP(r)
+		authorized, err := authorizeQNAP(r)
+		if err != nil {
+			s.logf("authorizeQNAP error: %v", err)
+		}
 		return authorized
 	default:
 		return true // no additional auth for this distro
@@ -515,6 +590,8 @@ func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) (ok bo
 // It should only be called by Server.ServeHTTP, via Server.apiHandler,
 // which protects the handler using gorilla csrf.
 func (s *Server) serveLoginAPI(w http.ResponseWriter, r *http.Request) {
+	// CYLONIX_ADD: log every login API request for diagnostics.
+	s.logf("serveLoginAPI: %s %s", r.Method, r.URL.Path)
 	switch {
 	case r.URL.Path == "/api/data" && r.Method == httpm.GET:
 		s.serveGetNodeData(w, r)
@@ -522,6 +599,14 @@ func (s *Server) serveLoginAPI(w http.ResponseWriter, r *http.Request) {
 		s.serveTailscaleUp(w, r)
 	case r.URL.Path == "/api/device-details-click" && r.Method == httpm.POST:
 		s.serveDeviceDetailsClick(w, r)
+	// __BEGIN_CYLONIX_ADD__
+	case r.URL.Path == "/api/local/v0/upload-client-metrics" && r.Method == httpm.POST:
+		s.serveUploadClientMetrics(w, r)
+	case r.URL.Path == "/api/cylonixd-log" && r.Method == httpm.GET:
+		s.serveCylonixdLog(w, r)
+	case r.URL.Path == "/api/cylonixd-log/download" && r.Method == httpm.GET:
+		s.serveCylonixdLogDownload(w, r)
+	// __END_CYLONIX_ADD__
 	default:
 		http.Error(w, "invalid endpoint or method", http.StatusNotFound)
 	}
@@ -699,9 +784,157 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		newHandler[noBodyData](s, w, r, alwaysAllowed).
 			handle(s.proxyRequestToLocalAPI)
 		return
+	// __BEGIN_CYLONIX_ADD__
+	case path == "/cylonixd-log" && r.Method == httpm.GET:
+		newHandler[noBodyData](s, w, r, alwaysAllowed).
+			handle(s.serveCylonixdLog)
+		return
+	case path == "/cylonixd-log/download" && r.Method == httpm.GET:
+		newHandler[noBodyData](s, w, r, alwaysAllowed).
+			handle(s.serveCylonixdLogDownload)
+		return
+	// __END_CYLONIX_ADD__
 	}
 	http.Error(w, "invalid endpoint", http.StatusNotFound)
 }
+
+// __BEGIN_CYLONIX_ADD__
+type cylonixdLogResponse struct {
+	Status    string `json:"status"`
+	Log       string `json:"log,omitempty"`
+	Updated   string `json:"updated,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) serveCylonixdLog(w http.ResponseWriter, r *http.Request) {
+	dist := distro.Get()
+	if dist != distro.Synology && dist != distro.QNAP {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if s.mode == LoginServerMode || s.mode == ReadOnlyServerMode {
+		authorized, err := authorizeSynology(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if !authorized {
+			http.Error(w, "not authorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	var logPath string
+	switch dist {
+	case distro.Synology:
+		logPath = cylonixdLogSynologyPath
+	case distro.QNAP:
+		logPath = qnapCylonixdLogPath()
+	}
+
+	logText, truncated, size, modTime, err := readLogTail(logPath, cylonixdLogMaxBytes)
+	if err != nil {
+		status := "error"
+		if errors.Is(err, os.ErrNotExist) {
+			status = "missing"
+		}
+		writeJSON(w, cylonixdLogResponse{
+			Status: status,
+			Error:  err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, cylonixdLogResponse{
+		Status:    "ok",
+		Log:       logText,
+		Updated:   modTime.UTC().Format(time.RFC3339),
+		Size:      size,
+		Truncated: truncated,
+	})
+}
+
+func (s *Server) serveCylonixdLogDownload(w http.ResponseWriter, r *http.Request) {
+	dist := distro.Get()
+	if dist != distro.Synology && dist != distro.QNAP {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if s.mode == LoginServerMode || s.mode == ReadOnlyServerMode {
+		authorized, err := authorizeSynology(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if !authorized {
+			http.Error(w, "not authorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	var logPath string
+	switch dist {
+	case distro.Synology:
+		logPath = cylonixdLogSynologyPath
+	case distro.QNAP:
+		logPath = qnapCylonixdLogPath()
+	}
+
+	logText, truncated, size, modTime, err := readLogTail(logPath, cylonixdLogDownloadMaxBytes)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	filename := fmt.Sprintf("cylonixd.stdout-%s.log", modTime.UTC().Format("20060102-150405"))
+	if truncated {
+		filename = strings.TrimSuffix(filename, ".log") + "-tail.log"
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("X-Log-Size", fmt.Sprintf("%d", size))
+	if truncated {
+		w.Header().Set("X-Log-Truncated", "true")
+	}
+	io.WriteString(w, logText)
+}
+
+func readLogTail(path string, maxBytes int64) (string, bool, int64, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false, 0, time.Time{}, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return "", false, 0, time.Time{}, err
+	}
+
+	var truncated bool
+	if st.Size() > maxBytes {
+		truncated = true
+		if _, err := f.Seek(st.Size()-maxBytes, io.SeekStart); err != nil {
+			return "", false, 0, time.Time{}, err
+		}
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", false, 0, time.Time{}, err
+	}
+
+	return string(data), truncated, st.Size(), st.ModTime(), nil
+}
+
+// __END_CYLONIX_ADD__
 
 type authResponse struct {
 	ServerMode     ServerMode      `json:"serverMode"`
@@ -896,6 +1129,7 @@ type nodeData struct {
 	KeyExpired bool
 
 	TUNMode     bool
+	IsQNAP      bool // __CYLONIX_ADD__
 	IsSynology  bool
 	DSMVersion  int // 6 or 7, if IsSynology=true
 	IsUnraid    bool
@@ -959,6 +1193,7 @@ func (s *Server) serveGetNodeData(w http.ResponseWriter, r *http.Request) {
 		TUNMode:          st.TUN,
 		IsSynology:       distro.Get() == distro.Synology || envknob.Bool("TS_FAKE_SYNOLOGY"),
 		DSMVersion:       distro.DSMVersion(),
+		IsQNAP:           distro.Get() == distro.QNAP, // __CYLONIX_ADD__
 		IsUnraid:         distro.Get() == distro.Unraid,
 		UnraidToken:      os.Getenv("UNRAID_CSRF_TOKEN"),
 		RunningSSHServer: prefs.RunSSH,
@@ -1210,6 +1445,8 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 	}
 	defer watcher.Close()
 
+	startErrCh := make(chan error, 1)
+
 	go func() {
 		if !isRunning {
 			ipnOptions := ipn.Options{AuthKey: opt.AuthKey}
@@ -1226,18 +1463,34 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 			}
 			if err := s.lc.Start(ctx, ipnOptions); err != nil {
 				s.logf("start: %v", err)
+				startErrCh <- fmt.Errorf("start: %w", err)
+				cancelWatch()
+				return
 			}
 		}
 		if opt.Reauthenticate {
 			if err := s.lc.StartLoginInteractive(ctx); err != nil {
 				s.logf("startLogin: %v", err)
+				startErrCh <- fmt.Errorf("start login interactive: %w", err)
+				cancelWatch()
+				return
 			}
 		}
 	}()
 
 	for {
+		select {
+		case err := <-startErrCh:
+			return "", err
+		default:
+		}
 		n, err := watcher.Next()
 		if err != nil {
+			select {
+			case startErr := <-startErrCh:
+				return "", startErr
+			default:
+			}
 			return "", err
 		}
 		if n.State != nil && *n.State == ipn.Running {
@@ -1267,8 +1520,10 @@ type tailscaleUpOptions struct {
 func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
+	s.logf("serveTailscaleUp: %s %s", r.Method, r.URL.Path)
 	st, err := s.lc.Status(r.Context())
 	if err != nil {
+		s.logf("tailscaleUp: status: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1276,6 +1531,7 @@ func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	var opt tailscaleUpOptions
 	type mi map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&opt); err != nil {
+		s.logf("tailscaleUp: decode request: %v", err)
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(mi{"error": err.Error()})
 		return
@@ -1286,6 +1542,7 @@ func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	url, err := s.tailscaleUp(r.Context(), st, opt)
 	s.logf("tailscaleUp = (URL %v, %v)", url != "", err)
 	if err != nil {
+		s.logf("tailscaleUp: error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(mi{"error": err.Error()})
 		return
@@ -1295,6 +1552,7 @@ func (s *Server) serveTailscaleUp(w http.ResponseWriter, r *http.Request) {
 	} else {
 		io.WriteString(w, "{}")
 	}
+	s.logf("serveTailscaleUp DONE: %s %s", r.Method, r.URL.Path)
 }
 
 // serveDeviceDetailsClick increments the web_client_device_details_click metric
@@ -1312,6 +1570,27 @@ func (s *Server) serveDeviceDetailsClick(w http.ResponseWriter, r *http.Request)
 	io.WriteString(w, "{}")
 }
 
+// __BEGIN_CYLONIX_ADD__
+func (s *Server) serveUploadClientMetrics(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/local")
+	localAPIURL := "http://" + apitype.LocalAPIHost + "/localapi" + path
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, localAPIURL, r.Body)
+	if err != nil {
+		s.logf("serveUploadClientMetrics: NewRequestWithContext error: %v %v", path, err)
+		http.Error(w, "failed to construct request", http.StatusInternalServerError)
+		return
+	}
+	_, err = s.lc.DoLocalRequest(req)
+	if err != nil {
+		s.logf("serveUploadClientMetrics: DoLocalRequest error: %v %v", path, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logf("serveUploadClientMetrics: successfully uploaded client metrics")
+	io.WriteString(w, "{}")
+}
+// __END_CYLONIX_ADD__
+
 // proxyRequestToLocalAPI proxies the web API request to the localapi.
 //
 // The web API request path is expected to exactly match a localapi path,
@@ -1319,13 +1598,16 @@ func (s *Server) serveDeviceDetailsClick(w http.ResponseWriter, r *http.Request)
 func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/local")
 	if r.URL.Path == path { // missing prefix
+		s.logf("proxyRequestToLocalAPI: missing prefix in request path: %s", r.URL.Path)
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
 	localAPIURL := "http://" + apitype.LocalAPIHost + "/localapi" + path
+	s.logf("proxyRequestToLocalAPI: %s %s", r.Method, localAPIURL)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, localAPIURL, r.Body)
 	if err != nil {
+		s.logf("proxyRequestToLocalAPI: NewRequestWithContext error: %v %v", path, err)
 		http.Error(w, "failed to construct request", http.StatusInternalServerError)
 		return
 	}
@@ -1333,6 +1615,7 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 	// Make request to tailscaled localapi.
 	resp, err := s.lc.DoLocalRequest(req)
 	if err != nil {
+		s.logf("proxyRequestToLocalAPI: DoLocalRequest error: %v status=%v err=%v", path, resp.StatusCode, err)
 		http.Error(w, err.Error(), resp.StatusCode)
 		return
 	}
@@ -1341,10 +1624,18 @@ func (s *Server) proxyRequestToLocalAPI(w http.ResponseWriter, r *http.Request) 
 	// Send response back to web frontend.
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
+	s.logf("proxyRequestToLocalAPI: copying response body: %v, code=%v", path, resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
+		s.logf("proxyRequestToLocalAPI: io.Copy error: %v %v", path, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
+
+// CYLONIX_NOTE: cylonix's csrfKey() helper has been dropped here in v1.96.4
+// because upstream's csrfProtect() implementation no longer relies on a
+// shared CSRF key (it uses Sec-Fetch-Site / Origin / Host comparisons
+// instead). If a future cherry-pick reintroduces a key-based flow it will
+// also need to bring back this helper.
 
 // enforcePrefix returns a HandlerFunc that enforces a given path prefix is used in requests,
 // then strips it before invoking h.

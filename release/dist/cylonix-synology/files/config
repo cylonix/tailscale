@@ -1,0 +1,11 @@
+{
+	".url": {
+		"SYNO.SDS.Cylonix": {
+			"type": "url",
+			"title": "Cylonix",
+			"icon": "PACKAGE_ICON_256.PNG",
+			"url": "webman/3rdparty/Cylonix/index.cgi/",
+			"urlTarget": "_syno_cylonix"
+		}
+	}
+}

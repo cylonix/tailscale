@@ -142,13 +142,13 @@ On Unix-like systems, you can also specify a Unix domain socket (e.g., unix:/tmp
 
 EXAMPLES
   - Expose an HTTP server running at 127.0.0.1:3000 in the foreground:
-    $ tailscale %[1]s 3000
+    $ cylonix %[1]s 3000
 
   - Expose an HTTP server running at 127.0.0.1:3000 in the background:
-    $ tailscale %[1]s --bg 3000
+    $ cylonix %[1]s --bg 3000
 
   - Expose an HTTPS server with invalid or self-signed certificates at https://localhost:8443
-    $ tailscale %[1]s https+insecure://localhost:8443
+    $ cylonix %[1]s https+insecure://localhost:8443
 
   - Expose a service listening on a Unix socket (Linux/macOS/BSD only):
     $ tailscale %[1]s unix:/var/run/myservice.sock
@@ -194,18 +194,18 @@ const noService tailcfg.ServiceName = ""
 var infoMap = map[serveMode]commandInfo{
 	serve: {
 		Name:      "serve",
-		ShortHelp: "Serve content and local servers on your tailnet",
+		ShortHelp: "Serve content and local servers on your mesh network",
 		LongHelp: strings.Join([]string{
-			"Tailscale Serve enables you to share a local server securely within your tailnet.\n",
-			"To share a local server on the internet, use `tailscale funnel`\n\n",
+			"Cylonix Serve enables you to share a local server securely within your mesh network.\n",
+			"To share a local server on the internet, use `cylonix funnel`\n\n",
 		}, "\n"),
 	},
 	funnel: {
 		Name:      "funnel",
 		ShortHelp: "Serve content and local servers on the internet",
 		LongHelp: strings.Join([]string{
-			"Funnel enables you to share a local server on the internet using Tailscale.\n",
-			"To share only within your tailnet, use `tailscale serve`\n\n",
+			"Funnel enables you to share a local server on the internet using Cylonix.\n",
+			"To share only within your mesh network, use `cylonix serve`\n\n",
 		}, "\n"),
 	},
 }
@@ -213,7 +213,7 @@ var infoMap = map[serveMode]commandInfo{
 // errHelpFunc is standard error text that prompts users to
 // run `$subcmd --help` for information on how to use serve.
 var errHelpFunc = func(m serveMode) error {
-	return fmt.Errorf("try `tailscale %s --help` for usage info", infoMap[m].Name)
+	return fmt.Errorf("try `cylonix %s --help` for usage info", infoMap[m].Name)
 }
 
 // newServeV2Command returns a new "serve" subcommand using e as its environment.
@@ -228,9 +228,9 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 		Name:      info.Name,
 		ShortHelp: info.ShortHelp,
 		ShortUsage: strings.Join([]string{
-			fmt.Sprintf("tailscale %s <target>", info.Name),
-			fmt.Sprintf("tailscale %s status [--json]", info.Name),
-			fmt.Sprintf("tailscale %s reset", info.Name),
+			fmt.Sprintf("cylonix %s <target>", info.Name),
+			fmt.Sprintf("cylonix %s status [--json]", info.Name),
+			fmt.Sprintf("cylonix %s reset", info.Name),
 		}, "\n"),
 		LongHelp: info.LongHelp + fmt.Sprintf(strings.TrimSpace(serveHelpCommon), info.Name),
 		Exec:     e.runServeCombined(subcmd),
@@ -251,11 +251,14 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 			fs.BoolVar(&e.yes, "yes", false, "Update without interactive prompts (default false)")
 		}),
 		UsageFunc: usageFuncNoDefaultValues,
+		// CYLONIX_MOD: rebrand the user-visible "tailscale" prefix in
+		// usage strings to "cylonix" while keeping upstream's expanded
+		// subcommand set (drain/clear/advertise/get-config/set-config).
 		Subcommands: func() []*ffcli.Command {
 			subcmds := []*ffcli.Command{
 				{
 					Name:       "status",
-					ShortUsage: "tailscale " + info.Name + " status [--json]",
+					ShortUsage: "cylonix " + info.Name + " status [--json]",
 					Exec:       e.runServeStatus,
 					ShortHelp:  "View current " + info.Name + " configuration",
 					FlagSet: e.newFlags("serve-status", func(fs *flag.FlagSet) {
@@ -264,7 +267,7 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 				},
 				{
 					Name:       "reset",
-					ShortUsage: "tailscale " + info.Name + " reset",
+					ShortUsage: "cylonix " + info.Name + " reset",
 					ShortHelp:  "Reset current " + info.Name + " config",
 					Exec:       e.runServeReset,
 					FlagSet:    e.newFlags("serve-reset", nil),
@@ -274,7 +277,7 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 				subcmds = append(subcmds, []*ffcli.Command{
 					{
 						Name:       "drain",
-						ShortUsage: fmt.Sprintf("tailscale %s drain <service>", info.Name),
+						ShortUsage: fmt.Sprintf("cylonix %s drain <service>", info.Name),
 						ShortHelp:  "Drain a service from the current node",
 						LongHelp: "Make the current node no longer accept new connections for the specified service.\n" +
 							"Existing connections will continue to work until they are closed, but no new connections will be accepted.\n" +
@@ -284,24 +287,24 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 					},
 					{
 						Name:       "clear",
-						ShortUsage: fmt.Sprintf("tailscale %s clear <service>", info.Name),
+						ShortUsage: fmt.Sprintf("cylonix %s clear <service>", info.Name),
 						ShortHelp:  "Remove all config for a service",
 						LongHelp:   "Remove all handlers configured for the specified service.",
 						Exec:       e.runServeClear,
 					},
 					{
 						Name:       "advertise",
-						ShortUsage: fmt.Sprintf("tailscale %s advertise <service>", info.Name),
+						ShortUsage: fmt.Sprintf("cylonix %s advertise <service>", info.Name),
 						ShortHelp:  "Advertise this node as a service proxy to the tailnet",
 						LongHelp: "Advertise this node as a service proxy to the tailnet. This command is used\n" +
 							"to make the current node be considered as a service host for a service. This is\n" +
 							"useful to bring a service back after it has been drained. (i.e. after running \n" +
-							"`tailscale serve drain <service>`). This is not needed if you are using `tailscale serve` to initialize a service.",
+							"`cylonix serve drain <service>`). This is not needed if you are using `cylonix serve` to initialize a service.",
 						Exec: e.runServeAdvertise,
 					},
 					{
 						Name:       "get-config",
-						ShortUsage: fmt.Sprintf("tailscale %s get-config <file> [--service=<service>] [--all]", info.Name),
+						ShortUsage: fmt.Sprintf("cylonix %s get-config <file> [--service=<service>] [--all]", info.Name),
 						ShortHelp:  "Get service configuration to save to a file",
 						LongHelp: "Get the configuration for services that this node is currently hosting in a\n" +
 							"format that can later be provided to set-config. This can be used to declaratively set\n" +
@@ -314,7 +317,7 @@ func newServeV2Command(e *serveEnv, subcmd serveMode) *ffcli.Command {
 					},
 					{
 						Name:       "set-config",
-						ShortUsage: fmt.Sprintf("tailscale %s set-config <file> [--service=<service>] [--all]", info.Name),
+						ShortUsage: fmt.Sprintf("cylonix %s set-config <file> [--service=<service>] [--all]", info.Name),
 						ShortHelp:  "Define service configuration from a file",
 						LongHelp: "Read the provided configuration file and use it to declaratively set the configuration\n" +
 							"for either a single service, or for all services that this node is hosting. If --service is specified,\n" +
@@ -946,16 +949,18 @@ func (e *serveEnv) setServe(sc *ipn.ServeConfig, dnsName string, srvType serveTy
 	return nil
 }
 
+// CYLONIX_MOD: rebrand the user-visible "tailscale ..." command suggestions
+// and "your tailnet" copy to "cylonix ..." / "your mesh network".
 var (
 	msgFunnelAvailable             = "Available on the internet:"
-	msgServeAvailable              = "Available within your tailnet:"
-	msgServiceWaitingApproval      = "This machine is configured as a service proxy for %s, but approval from an admin is required. Once approved, it will be available in your Tailnet as:"
+	msgServeAvailable              = "Available within your mesh network:"
+	msgServiceWaitingApproval      = "This machine is configured as a service proxy for %s, but approval from an admin is required. Once approved, it will be available in your mesh network as:"
 	msgRunningInBackground         = "%s started and running in the background."
 	msgRunningTunService           = "IPv4 and IPv6 traffic to %s is being routed to your operating system."
-	msgDisableProxy                = "To disable the proxy, run: tailscale %s --%s=%d off"
-	msgDisableServiceProxy         = "To disable the proxy, run: tailscale serve --service=%s --%s=%d off"
-	msgDisableServiceTun           = "To disable the service in TUN mode, run: tailscale serve --service=%s --tun off"
-	msgDisableService              = "To remove config for the service, run: tailscale serve clear %s"
+	msgDisableProxy                = "To disable the proxy, run: cylonix %s --%s=%d off"
+	msgDisableServiceProxy         = "To disable the proxy, run: cylonix serve --service=%s --%s=%d off"
+	msgDisableServiceTun           = "To disable the service in TUN mode, run: cylonix serve --service=%s --tun off"
+	msgDisableService              = "To remove config for the service, run: cylonix serve clear %s"
 	msgWarnRemoteDestCompatibility = "Warning: %s doesn't support connecting to remote destinations from non-default route, see tailscale.com/kb/1552/tailscale-services for detail."
 	msgToExit                      = "Press Ctrl+C to exit."
 )
@@ -1166,7 +1171,7 @@ func (e *serveEnv) applyWebServe(sc *ipn.ServeConfig, dnsName string, srvPort ui
 	case filepath.IsAbs(target):
 		if version.IsMacAppStore() || version.IsMacSys() {
 			// The Tailscale network extension cannot serve arbitrary paths on macOS due to sandbox restrictions (2024-03-26)
-			return errors.New("Path serving is not supported on macOS due to sandbox restrictions. To use Tailscale Serve on macOS, switch to the open-source tailscaled distribution. See https://tailscale.com/kb/1065/macos-variants for more information.")
+			return errors.New("Path serving is not supported on macOS due to sandbox restrictions. To use Cylonix Serve on macOS, switch to the open-source cylonixd distribution. See https://tailscale.com/kb/1065/macos-variants for more information.")
 		}
 
 		target = filepath.Clean(target)
@@ -1377,7 +1382,7 @@ func isLegacyInvocation(subcmd serveMode, args []string) (string, bool) {
 		return "", false
 	}
 
-	cmd := []string{"tailscale", "serve", "--bg"}
+	cmd := []string{"cylonix", "serve", "--bg"}
 	switch srcType {
 	case "https":
 		// In the new code, we default to https:443,

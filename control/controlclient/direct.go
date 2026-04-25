@@ -235,6 +235,10 @@ type NetmapDeltaUpdater interface {
 
 var nextControlClientID atomic.Int64
 
+// CYLONIX_ADD: ErrNodeUnauthorized is returned by control client APIs when
+// the control plane has rejected the node as unauthorized.
+var ErrNodeUnauthorized = errors.New("node is unauthorized")
+
 // NewDirect returns a new Direct client.
 func NewDirect(opts Options) (*Direct, error) {
 	if opts.ServerURL == "" {
@@ -375,6 +379,23 @@ func (c *Direct) Close() error {
 	c.noiseClient = nil
 	c.httpc.CloseIdleConnections()
 	return nil
+}
+
+// CYLONIX_ADD: ResetNoiseConnections closes all active noise connections,
+// forcing the next request to dial a new connection. This is useful when
+// the VPN configuration changes on mobile platforms (Android/iOS) and
+// existing connections may no longer route correctly. In v1.96.4 the
+// ts2021.Client does not expose a ResetConnections; closing the client
+// and clearing it has the equivalent effect because getNoiseClient will
+// re-create one on the next call.
+func (c *Direct) ResetNoiseConnections() {
+	c.mu.Lock()
+	nc := c.noiseClient
+	c.noiseClient = nil
+	c.mu.Unlock()
+	if nc != nil {
+		_ = nc.Close()
+	}
 }
 
 // SetHostinfo clones the provided Hostinfo and remembers it for the
@@ -559,7 +580,8 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 		if expired {
 			c.logf("Old key expired -> regen=true")
 			if f, ok := feature.HookSystemdStatus.GetOk(); ok {
-				f("key expired; run 'tailscale up' to authenticate")
+				// CYLONIX_MOD: report "cylonix up" rather than "tailscale up".
+				f("key expired; run 'cylonix up' to authenticate")
 			}
 			regen = true
 		}
@@ -569,8 +591,9 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 		}
 	}
 
-	c.logf("doLogin(regen=%v, hasUrl=%v)", regen, opt.URL != "")
-	if serverKey.IsZero() {
+	c.logf("doLogin(regen=%v, hasUrl=%v hasAuthKey=%v)", regen, opt.URL != "", authKey != "")
+	c.logf("server keys: legacy=%v noise=%v", serverKey.ShortString(), serverNoiseKey.ShortString()) // __CYLONIX_ADD__
+	if serverKey.IsZero() && serverNoiseKey.IsZero() {                                               // __CYLONIX_MOD__
 		keys, err := loadServerPubKeys(ctx, c.httpc, c.serverURL)
 		if err != nil && c.interceptedDial != nil && c.interceptedDial.Load() {
 			c.health.SetUnhealthy(macOSScreenTime, nil)
@@ -596,6 +619,7 @@ func (c *Direct) doLogin(ctx context.Context, opt loginOpt) (mustRegen bool, new
 	}
 
 	if serverNoiseKey.IsZero() {
+		c.logf("control server is too old; no noise key")
 		return false, "", nil, errors.New("control server is too old; no noise key")
 	}
 
@@ -912,6 +936,8 @@ func (c *Direct) sendMapRequest(ctx context.Context, isStreaming bool, nu Netmap
 	serverURL := c.serverURL
 	serverNoiseKey := c.serverNoiseKey
 	discoKey := c.discoPubKey
+	// CYLONIX_ADD: decode wrapped auth key for use later in this map request.
+	authKey, _, _, _ := tka.DecodeWrappedAuthkey(c.authKey, c.logf)
 	hi := c.hostInfoLocked()
 	backendLogID := hi.BackendLogID
 	connectionHandleForTest := c.connectionHandleForTest
@@ -1067,6 +1093,14 @@ func (c *Direct) sendMapRequest(ctx context.Context, isStreaming bool, nu Netmap
 	if res.StatusCode != 200 {
 		msg, _ := io.ReadAll(res.Body)
 		res.Body.Close()
+		// __BEGIN_CYLONIX_ADD__
+		// If we get a 401 and we don't have an auth key, it's
+		// probably because the node was deauthorized.
+		if res.StatusCode == 401 && authKey == "" {
+			c.logf("map request: node appears to be unauthorized (401); no auth key present")
+			return ErrNodeUnauthorized
+		}
+		// __END_CYLONIX_ADD__
 		return fmt.Errorf("initial fetch failed %d: %.200s",
 			res.StatusCode, strings.TrimSpace(string(msg)))
 	}
@@ -1295,7 +1329,12 @@ func decode(res *http.Response, v any) error {
 	if res.StatusCode != 200 {
 		return fmt.Errorf("%d: %v", res.StatusCode, string(msg))
 	}
-	return json.Unmarshal(msg, v)
+	// __BEGIN_CYLONIX_MOD__
+	if err := json.Unmarshal(msg, v); err != nil {
+		return fmt.Errorf("unmarshal: %v msg=%v", err, string(msg))
+	}
+	return nil
+	// __END_CYLONIX_MOD__
 }
 
 var jsonEscapedZero = []byte(`\u0000`)

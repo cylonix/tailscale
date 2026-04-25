@@ -75,11 +75,18 @@ case "$REV" in
             # Go uses the name "amd64".
             HOST_ARCH="amd64"
         fi
-        curl -f -L -o "$toolchain.tar.gz" "https://github.com/tailscale/go/releases/download/build-${REV}/${HOST_OS}-${HOST_ARCH}.tar.gz"
+        echo Downloading "https://github.com/tailscale/go/releases/download/build-${REV}/${HOST_OS}-${HOST_ARCH}.tar.gz"
+        if [[ -f $toolchain.tar.gz ]]; then
+            echo "Found existing tarball $toolchain.tar.gz, skipping download"
+        else
+            curl -f -L -o "$toolchain.tar.gz" "https://github.com/tailscale/go/releases/download/build-${REV}/${HOST_OS}-${HOST_ARCH}.tar.gz"
+        fi
         mkdir -p "$toolchain"
         (cd "$toolchain" && tar --strip-components=1 -xf "$toolchain.tar.gz")
         echo "$REV" >"$toolchain.extracted"
-        rm -f "$toolchain.tar.gz"
+        ls -l "$toolchain"
+        ls -l "$toolchain.extracted"
+        #rm -f "$toolchain.tar.gz"
 
         # Do some cleanup of old toolchains while we're here.
         for hash in $(find "$HOME/.cache/tsgo" -maxdepth 1 -type f -name '*.extracted' -mtime 90 -exec basename {} \; | sed 's/.extracted$//'); do
@@ -114,6 +121,7 @@ if [[ -d "$toolchain" ]]; then
     # version.
     have_go_minor="${have_go_minor%rc*}"
     if [[ -z "$have_go_minor" || "$have_go_minor" -lt "$want_go_minor" ]]; then
+        echo "Toolchain $toolchain is too old (go$have_go_minor < go$want_go_minor), removing it" >&2
         rm -rf "$toolchain" "$toolchain.extracted"
     fi
 fi

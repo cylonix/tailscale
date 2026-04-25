@@ -3,6 +3,7 @@
 
 import cx from "classnames"
 import React from "react"
+import UserIcon from "src/assets/icons/user.svg?react"
 
 export default function ProfilePic({
   url,
@@ -34,7 +35,9 @@ export default function ProfilePic({
           }}
         />
       ) : (
-        <div className="w-full h-full flex pointer-events-none rounded-full border border-gray-400 border-dashed" />
+        <div className="w-full h-full flex pointer-events-none rounded-full border border-gray-400 border-dashed">
+          <UserIcon className="m-auto text-gray-400" />
+        </div>
       )}
     </div>
   )

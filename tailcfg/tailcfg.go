@@ -2755,6 +2755,12 @@ const (
 	// See https://github.com/tailscale/tailscale/issues/15404.
 	// TODO(bradfitz): remove this a few releases after 2026-02-16.
 	NodeAttrForceRegisterMagicDNSIPv4Only NodeCapability = "force-register-magicdns-ipv4-only"
+
+	// CYLONIX_ADD: NodeSendDNSToMeInTunnel indicates that the client should
+	// send DNS queries to itself over the Tailscale tunnel. This is applicable
+	// if the node is an exit node and prefers the DNS queries to be sent over
+	// the tunnel.
+	NodeSendDNSToMeInTunnel NodeCapability = "send-dns-to-me-in-tunnel"
 )
 
 // SetDNSRequest is a request to add a DNS record.

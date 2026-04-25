@@ -32,8 +32,8 @@ func init() {
 
 var updateCmd = &ffcli.Command{
 	Name:       "update",
-	ShortUsage: "tailscale update",
-	ShortHelp:  "Update Tailscale to the latest/different version",
+	ShortUsage: "cylonix update",
+	ShortHelp:  "Update Cylonix to the latest/different version",
 	Exec:       runUpdate,
 	FlagSet: (func() *flag.FlagSet {
 		fs := newFlagSet("update")
@@ -90,7 +90,7 @@ func runUpdate(ctx context.Context, args []string) error {
 
 func confirmUpdate(ver string) bool {
 	if updateArgs.yes {
-		fmt.Printf("Updating Tailscale from %v to %v; --yes given, continuing without prompts.\n", version.Short(), ver)
+		fmt.Printf("Updating Cylonix from %v to %v; --yes given, continuing without prompts.\n", version.Short(), ver)
 		return true
 	}
 
@@ -99,6 +99,9 @@ func confirmUpdate(ver string) bool {
 		return false
 	}
 
-	msg := fmt.Sprintf("This will update Tailscale from %v to %v. Continue?", version.Short(), ver)
+	// CYLONIX_MOD: rebrand "Tailscale" -> "Cylonix" in confirmation prompt.
+	// (Use upstream's prompt.YesNo helper rather than the local promptYesNo
+	// cylonix had previously defined here.)
+	msg := fmt.Sprintf("This will update Cylonix from %v to %v. Continue?", version.Short(), ver)
 	return prompt.YesNo(msg, true)
 }

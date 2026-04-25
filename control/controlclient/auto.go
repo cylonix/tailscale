@@ -415,6 +415,15 @@ func (c *Auto) DirectForTest() *Direct {
 	return c.direct
 }
 
+// __BEGIN_CYLONIX_ADD__
+// ResetNoiseConnections resets all active noise connections.
+// This forces the next control server request to dial a new connection.
+// This is useful when VPN configuration changes on mobile platforms.
+func (c *Auto) ResetNoiseConnections() {
+	c.direct.ResetNoiseConnections()
+}
+// __END_CYLONIX_ADD__
+
 // unpausedChanLocked returns a new channel that gets sent
 // either a true when unpaused or false on Auto.Shutdown.
 //
@@ -534,6 +543,15 @@ func (c *Auto) mapRoutine() {
 		} else {
 			mrs.bo.BackOff(ctx, err)
 			report(err, "PollNetMap")
+			// __BEGIN_CYLONIX_ADD__
+			// If we got an unauthorized error, log out.
+			if errors.Is(err, ErrNodeUnauthorized) {
+				// The node was de-authorized. Log out.
+				c.logf("mapRoutine: logging out due to unauthorized error")
+				c.Logout(context.Background())
+				c.sendStatus("authRoutine-node-unauthorized", ErrNodeUnauthorized, "", nil)
+			}
+			// __END_CYLONIX_ADD__
 		}
 	}
 }

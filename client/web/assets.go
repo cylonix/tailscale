@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	prebuilt "github.com/tailscale/web-client-prebuilt"
+	prebuilt "github.com/cylonix/cylonix-web-client-prebuilt"
 )
 
 var start = time.Now()

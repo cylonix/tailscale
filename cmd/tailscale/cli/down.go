@@ -15,8 +15,8 @@ import (
 
 var downCmd = &ffcli.Command{
 	Name:       "down",
-	ShortUsage: "tailscale down",
-	ShortHelp:  "Disconnect from Tailscale",
+	ShortUsage: "cylonix down",
+	ShortHelp:  "Disconnect from Cylonix",
 
 	Exec:    runDown,
 	FlagSet: newDownFlagSet(),
@@ -40,7 +40,7 @@ func runDown(ctx context.Context, args []string) error {
 	}
 
 	if isSSHOverTailscale() {
-		if err := presentRiskToUser(riskLoseSSH, `You are connected over Tailscale; this action will disable Tailscale and result in your session disconnecting.`, downArgs.acceptedRisks); err != nil {
+		if err := presentRiskToUser(riskLoseSSH, `You are connected over Cylonix; this action will disable Cylonix and result in your session disconnecting.`, downArgs.acceptedRisks); err != nil {
 			return err
 		}
 	}
@@ -50,7 +50,7 @@ func runDown(ctx context.Context, args []string) error {
 		return fmt.Errorf("error fetching current status: %w", err)
 	}
 	if st.BackendState == "Stopped" {
-		fmt.Fprintf(Stderr, "Tailscale was already stopped.\n")
+		fmt.Fprintf(Stderr, "Cylonix was already stopped.\n")
 		return nil
 	}
 	ctx = apitype.RequestReasonKey.WithValue(ctx, downArgs.reason)

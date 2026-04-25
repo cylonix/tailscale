@@ -15,17 +15,16 @@ import (
 
 var metricsCmd = &ffcli.Command{
 	Name:      "metrics",
-	ShortHelp: "Show Tailscale metrics",
+	ShortHelp: "Show Cylonix metrics",
 	LongHelp: strings.TrimSpace(`
 
-The 'tailscale metrics' command shows Tailscale user-facing metrics (as opposed
-to internal metrics printed by 'tailscale debug metrics').
-
-For more information about Tailscale metrics, refer to
+The 'cylonix metrics' command shows Cylonix user-facing metrics (as opposed
+to internal metrics printed by 'cylonix debug metrics').
+For more information about Cylonix metrics, refer to
 https://tailscale.com/s/client-metrics
 
 `),
-	ShortUsage: "tailscale metrics <subcommand> [flags]",
+	ShortUsage: "cylonix metrics <subcommand> [flags]",
 	UsageFunc:  usageFuncNoDefaultValues,
 	Exec:       runMetricsNoSubcommand,
 	Subcommands: []*ffcli.Command{

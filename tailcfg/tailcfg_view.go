@@ -1876,6 +1876,10 @@ func (v DERPNodeView) STUNTestIP() string { return v.ж.STUNTestIP }
 // on port 80 specifically. This is used for captive portal checks.
 func (v DERPNodeView) CanPort80() bool { return v.ж.CanPort80 }
 
+// CYLONIX_ADD: XRay returns a clone of the optional XRay underlay
+// configuration for this DERP node.
+func (v DERPNodeView) XRay() *DERPXRay { return v.ж.XRay.Clone() }
+
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _DERPNodeViewNeedsRegeneration = DERPNode(struct {
 	Name             string
@@ -1890,6 +1894,7 @@ var _DERPNodeViewNeedsRegeneration = DERPNode(struct {
 	InsecureForTests bool
 	STUNTestIP       string
 	CanPort80        bool
+	XRay             *DERPXRay
 }{})
 
 // View returns a read-only view of SSHRule.

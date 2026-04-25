@@ -774,6 +774,14 @@ func (p *Prefs) ControlURLOrDefault(polc policyclient.Client) string {
 		}
 		return controlURL
 	}
+	// __BEGIN_CYLONIX_MOD__
+	// If the policy did not explicitly set the ControlURL, we
+	// should return the ControlURL set in the Prefs.
+	log.Printf("ControlURL is empty, using Prefs.ControlURL: %v", p.ControlURL)
+	if p.ControlURL != "" {
+		return p.ControlURL
+	}
+	// __END_CYLONIX_MOD__
 	return DefaultControlURL
 }
 

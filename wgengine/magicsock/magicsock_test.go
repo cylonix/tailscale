@@ -89,7 +89,7 @@ func init() {
 	// test, reduce the wait period.
 	// (In particular, TestActiveDiscovery.)
 	discoPingInterval = 100 * time.Millisecond
-	pingTimeoutDuration = 100 * time.Millisecond
+	pingTimeoutDurationDefault = 100 * time.Millisecond // __CYLONIX_MOD__
 }
 
 // WaitReady waits until the magicsock is entirely initialized and connected

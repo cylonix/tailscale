@@ -17,8 +17,8 @@ import (
 
 var versionCmd = &ffcli.Command{
 	Name:       "version",
-	ShortUsage: "tailscale version [flags]",
-	ShortHelp:  "Print Tailscale version",
+	ShortUsage: "cylonix version [flags]",
+	ShortHelp:  "Print Cylonix version",
 	FlagSet: (func() *flag.FlagSet {
 		fs := newFlagSet("version")
 		fs.BoolVar(&versionArgs.daemon, "daemon", false, "also print local node's daemon version")

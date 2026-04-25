@@ -121,6 +121,12 @@ type Knobs struct {
 	// See https://github.com/tailscale/tailscale/issues/15404.
 	// TODO(bradfitz): remove this a few releases after 2026-02-16.
 	ForceRegisterMagicDNSIPv4Only atomic.Bool
+
+	// CYLONIX_ADD: SendDNSToExitNodeInTunnel forces DNS packets to be sent to
+	// the exit node through the tunnel (UserDial) instead of via SystemDial.
+	// This knob is local on the device and does not affect the overall
+	// UserDialUseRoutes capability.
+	SendDNSToExitNodeInTunnel atomic.Bool
 }
 
 // UpdateFromNodeAttributes updates k (if non-nil) based on the provided self

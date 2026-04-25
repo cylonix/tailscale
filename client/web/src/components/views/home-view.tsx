@@ -12,6 +12,7 @@ import { AuthResponse, canEdit } from "src/hooks/auth"
 import { NodeData } from "src/types"
 import Card from "src/ui/card"
 import { pluralize } from "src/utils/util"
+import { Env } from "src/env"
 import { Link, useLocation } from "wouter"
 
 export default function HomeView({
@@ -84,7 +85,7 @@ export default function HomeView({
           <SettingsCard
             link="/subnets"
             title="Subnet router"
-            body="Add devices to your tailnet without installing Tailscale on them."
+            body={`Add devices to your mesh network without installing ${Env.appName} on them.`}
             badge={
               allSubnetRoutes
                 ? {
@@ -110,8 +111,8 @@ export default function HomeView({
         {node.Features["ssh"] && (
           <SettingsCard
             link="/ssh"
-            title="Tailscale SSH server"
-            body="Run a Tailscale SSH server on this device and allow other devices in your tailnet to SSH into it."
+            title={`${Env.appName} SSH server`}
+            body={`Run a ${Env.appName} SSH server on this device and allow other devices in your mesh network to SSH into it.`}
             badge={
               node.RunningSSHServer
                 ? {

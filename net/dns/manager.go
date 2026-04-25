@@ -342,6 +342,11 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 		rcfg.Routes = routes
 		rcfg.Routes["."] = cfg.DefaultResolvers
 		ocfg.Nameservers = cfg.serviceIPs(m.knobs)
+		// CYLONIX_NOTE: cylonix's MustAddDefaultResolvers override has been
+		// dropped here because that field does not exist on dns.Config in
+		// v1.96.4. If the override is still required for the cylonix exit
+		// node use case, it must be reintroduced as a Config field with
+		// matching plumbing through the resolver/forwarder.
 		return rcfg, ocfg, nil
 	}
 
@@ -643,6 +648,17 @@ func (m *Manager) FlushCaches() error {
 	}
 	return flushCaches()
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (m *Manager) ResetDNSClientCache() {
+	m.resolver.ResetDNSClientCache()
+}
+
+func (m *Manager) SetLinkSelector(linkSel resolver.ForwardLinkSelector) {
+	m.resolver.SetLinkSelector(linkSel)
+}
+
+// __END_CYLONIX_ADD__
 
 // CleanUp restores the system DNS configuration to its original state
 // in case the Tailscale daemon terminated without closing the router.

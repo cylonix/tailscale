@@ -14,6 +14,7 @@ import Card from "src/ui/card"
 import Dialog from "src/ui/dialog"
 import EmptyState from "src/ui/empty-state"
 import Input from "src/ui/input"
+import { Env } from "src/env"
 
 export default function SubnetRouterView({
   readonly,
@@ -45,7 +46,7 @@ export default function SubnetRouterView({
     <>
       <h1 className="mb-1">Subnet router</h1>
       <p className="description mb-5">
-        Add devices to your tailnet without installing Tailscale.{" "}
+        Add devices to your mesh network without installing {Env.appName}.{" "}
         <a
           href="https://tailscale.com/kb/1019/subnets/"
           className="text-blue-700"

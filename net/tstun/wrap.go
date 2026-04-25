@@ -586,6 +586,13 @@ type peerConfigTable struct {
 	// address(es).
 	byIP bart.Table[*peerConfig]
 
+	// __BEGIN_CYLONIX_ADD__
+	// byIP is now used for NAT only. This makes it a bug if an exit node
+	// is jailed, because all peers traffic will be matched to it and
+	// be blocked. To work around this, we add a byIPAll to contain all peers.
+	byIPAll bart.Table[*peerConfig]
+	// __END_CYLONIX_ADD__
+
 	// masqAddrCounts is a count of peers by MasqueradeAsIP.
 	// TODO? for logging
 	masqAddrCounts map[netip.Addr]int
@@ -763,16 +770,23 @@ func peerConfigTableFromWGConfig(wcfg *wgcfg.Config) *peerConfigTable {
 			}
 		}
 
-		if !addrToUse4.IsValid() && !addrToUse6.IsValid() && !p.IsJailed {
-			// NAT not required for this peer.
-			continue
-		}
-
 		// Use the same peer configuration for each address of the peer.
 		pc := &peerConfig{
 			dstMasqAddr4: addrToUse4,
 			dstMasqAddr6: addrToUse6,
 			jailed:       p.IsJailed,
+		}
+
+		// __BEGIN_CYLONIX_ADD__
+		// Add to byIPAll unconditionally.
+		for _, ip := range p.AllowedIPs {
+			ret.byIPAll.Insert(ip, pc)
+		}
+		// __END_CYLONIX_ADD__
+
+		if !addrToUse4.IsValid() && !addrToUse6.IsValid() && !p.IsJailed {
+			// NAT not required for this peer.
+			continue
 		}
 
 		// Insert an entry into our routing table for each allowed IP.
@@ -791,7 +805,7 @@ func (pc *peerConfigTable) inboundPacketIsJailed(p *packet.Parsed) bool {
 	if pc == nil {
 		return false
 	}
-	c, ok := pc.byIP.Lookup(p.Src.Addr())
+	c, ok := pc.byIPAll.Lookup(p.Src.Addr()) // __CYLONIX_MOD__
 	if !ok {
 		return false
 	}
@@ -802,7 +816,7 @@ func (pc *peerConfigTable) outboundPacketIsJailed(p *packet.Parsed) bool {
 	if pc == nil {
 		return false
 	}
-	c, ok := pc.byIP.Lookup(p.Dst.Addr())
+	c, ok := pc.byIPAll.Lookup(p.Dst.Addr()) // __CYLONIX_MOD__
 	if !ok {
 		return false
 	}

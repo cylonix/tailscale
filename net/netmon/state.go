@@ -6,6 +6,7 @@ package netmon
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"tailscale.com/envknob"
 	"tailscale.com/feature"
@@ -27,6 +29,8 @@ import (
 // report all IPv6 endpoints rather than trim endpoints that are siblings on the
 // same interface and subnet.
 var forceAllIPv6Endpoints = envknob.RegisterBool("TS_DEBUG_FORCE_ALL_IPV6_ENDPOINTS")
+var problematicInterfaces = envknob.RegisterString("TS_DEBUG_SKIP_PROBLEMATIC_INTERFACES") // __CYLONIX_ADD__
+var quietLogf = logger.RateLimitedFn(log.Printf, 30*time.Second, 5, 10) // __CYLONIX_ADD__
 
 // LoginEndpointForProxyDetermination is the URL used for testing
 // which HTTP proxy the system should use.
@@ -49,6 +53,20 @@ func isProblematicInterface(nif *net.Interface) bool {
 		(runtime.GOOS == "windows" && strings.Contains(name, "ZeroTier")) {
 		return true
 	}
+	// __BEGIN_CYLONIX_ADD__
+	// Skip problematic interfaces as specified by env var.
+	skipList := problematicInterfaces()
+	if skipList != "" {
+		skips := strings.Split(skipList, ",")
+		for _, skip := range skips {
+			skip = strings.TrimSpace(skip)
+			if skip != "" && strings.HasPrefix(name, skip) {
+				quietLogf("Skipping problematic interface from env var (%s): %s", skip, name)
+				return true
+			}
+		}
+	}
+	// __END_CYLONIX_ADD__
 	return false
 }
 
@@ -492,6 +510,8 @@ func isTailscaleInterface(name string, ips []netip.Prefix) bool {
 
 	// Windows, Linux...
 	return name == "Tailscale" || // as it is on Windows
+		name == "Cylonix" || // cylonix windows __CYLONIX_MOD__
+		strings.HasPrefix(name, "cylonix") || // cylonix linux __CYLONIX_MOD__
 		strings.HasPrefix(name, "tailscale") // TODO: use --tun flag value, etc; see TODO in method doc
 }
 

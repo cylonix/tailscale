@@ -1,0 +1,11 @@
+{
+	"port-config": {
+		"protocol-file": "conf/Cylonix.sc"
+	},
+	"usr-local-linker": {
+		"bin": ["bin/cylonix"]
+	},
+	"syslog-config": {
+		"logrotate-relpath": "conf/logrotate.conf"
+	}
+}

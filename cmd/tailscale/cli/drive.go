@@ -16,20 +16,21 @@ import (
 )
 
 const (
-	driveShareUsage   = "tailscale drive share <name> <path>"
-	driveRenameUsage  = "tailscale drive rename <oldname> <newname>"
-	driveUnshareUsage = "tailscale drive unshare <name>"
-	driveListUsage    = "tailscale drive list"
+	driveShareUsage   = "cylonix drive share <name> <path>"
+	driveRenameUsage  = "cylonix drive rename <oldname> <newname>"
+	driveUnshareUsage = "cylonix drive unshare <name>"
+	driveListUsage    = "cylonix drive list"
 )
 
 func init() {
 	maybeDriveCmd = driveCmd
 }
 
+// CYLONIX_MOD: rebrand the drive ShortHelp to reference the mesh network.
 func driveCmd() *ffcli.Command {
 	return &ffcli.Command{
 		Name:      "drive",
-		ShortHelp: "Share a directory with your tailnet",
+		ShortHelp: "Share a directory with your mesh network",
 		ShortUsage: strings.Join([]string{
 			driveShareUsage,
 			driveRenameUsage,
@@ -181,13 +182,13 @@ For example, to enable sharing and accessing shares for all member nodes:
 
 Each share is identified by a name and points to a directory at a specific path. For example, to share the path /Users/me/Documents under the name "docs", you would run:
 
-  $ tailscale drive share docs /Users/me/Documents
+  $ cylonix drive share docs /Users/me/Documents
 
 Note that the system forces share names to lowercase to avoid problems with clients that don't support case-sensitive filenames.
 
 Share names may only contain the letters a-z, underscore _, parentheses (), or spaces. Leading and trailing spaces are omitted.
 
-All Tailscale shares have a globally unique path consisting of the tailnet, the machine name and the share name. For example, if the above share was created on the machine "mylaptop" on the tailnet "mydomain.com", the share's path would be:
+All Cylonix shares have a globally unique path consisting of the tailnet, the machine name and the share name. For example, if the above share was created on the machine "mylaptop" on the tailnet "mydomain.com", the share's path would be:
 
   /mydomain.com/mylaptop/docs
 
@@ -227,18 +228,17 @@ On small tailnets, it may be convenient to categorically give all users full acc
 
 You can rename shares, for example you could rename the above share by running:
 
-  $ tailscale drive rename docs newdocs
+  $ cylonix drive rename docs newdocs
 
 You can remove shares by name, for example you could remove the above share by running:
 
-  $ tailscale drive unshare newdocs
-
+  $ cylonix drive unshare newdocs
 You can get a list of currently published shares by running:
 
-  $ tailscale drive list`
+  $ cylonix drive list`
 
 const shareLongHelpAs = `
 
 If you want a share to be accessed as a different user, you can use sudo to accomplish this. For example, to create the aforementioned share as "theuser", you could run:
 
-  $ sudo -u theuser tailscale drive share docs /Users/theuser/Documents`
+  $ sudo -u theuser cylonix drive share docs /Users/theuser/Documents`

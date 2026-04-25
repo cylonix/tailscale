@@ -85,7 +85,11 @@ const (
 	defaultPerClientSendQueueDepth = 32 // default packets buffered for sending
 	DefaultTCPWiteTimeout          = 2 * time.Second
 	privilegedWriteTimeout         = 30 * time.Second // for clients with the mesh key
+	defaultSlowWriteThreshold      = 200 * time.Millisecond
 )
+
+var slowWriteThreshold = envknob.RegisterDuration("TS_DEBUG_DERP_SLOW_WRITE")
+var logAllFlushes = envknob.RegisterOptBool("TS_DEBUG_DERP_LOG_ALL_FLUSHES")
 
 func getPerClientSendQueueDepth() int {
 	if v, ok := envknob.LookupInt("TS_DEBUG_DERP_PER_CLIENT_SEND_QUEUE_DEPTH"); ok {
@@ -169,6 +173,11 @@ type Server struct {
 	meshUpdateBatchSize        *metrics.Histogram
 	meshUpdateLoopCount        *metrics.Histogram
 	bufferedWriteFrames        *metrics.Histogram // how many sendLoop frames (or groups of related frames) get written per flush
+	writeFlushDurationMS       *metrics.Histogram // ms spent in bufio Flush()
+	slowFlushes                expvar.Int
+	sendQueueDepth             *metrics.Histogram // sendQueue length sampled at flush time
+	discoQueueDepth            *metrics.Histogram // discoSendQueue length sampled at flush time
+	sendPacketDurationMS       *metrics.Histogram // ms spent in sendPacket
 
 	// verifyClientsLocalTailscaled only accepts client connections to the DERP
 	// server if the clientKey is a known peer in the network, as specified by a
@@ -377,6 +386,10 @@ func New(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		meshUpdateBatchSize: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000}),
 		meshUpdateLoopCount: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100}),
 		bufferedWriteFrames: metrics.NewHistogram([]float64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 50, 100}),
+		writeFlushDurationMS: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}),
+		sendQueueDepth:       metrics.NewHistogram([]float64{0, 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256}),
+		discoQueueDepth:      metrics.NewHistogram([]float64{0, 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256}),
+		sendPacketDurationMS: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000}),
 		keyOfAddr:           map[netip.AddrPort]key.NodePublic{},
 		clock:               tstime.StdClock{},
 		tcpWriteTimeout:     DefaultTCPWiteTimeout,
@@ -1826,8 +1839,23 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 		default:
 			// Flush any writes from the 3 sends above, or from
 			// the blocking loop below.
+			flushStart := c.s.clock.Now()
 			if werr = c.bw.Flush(); werr != nil {
 				return werr
+			}
+			flushDur := c.s.clock.Since(flushStart)
+			c.s.writeFlushDurationMS.Observe(float64(flushDur.Milliseconds()))
+			c.s.sendQueueDepth.Observe(float64(len(c.sendQueue)))
+			c.s.discoQueueDepth.Observe(float64(len(c.discoSendQueue)))
+			threshold := slowWriteThreshold()
+			if threshold == 0 {
+				threshold = defaultSlowWriteThreshold
+			}
+			if flushDur >= threshold {
+				c.s.slowFlushes.Add(1)
+				c.s.limitedLogf("derp: slow flush to %s (%s) took %v (sendQ=%d discoQ=%d)", c.key.ShortString(), c.remoteIPPort.String(), flushDur, len(c.sendQueue), len(c.discoSendQueue))
+			} else if v, ok := logAllFlushes().Get(); ok && v {
+				c.s.limitedLogf("derp: flush to %s (%s) took %v (sendQ=%d discoQ=%d)", c.key.ShortString(), c.remoteIPPort.String(), flushDur, len(c.sendQueue), len(c.discoSendQueue))
 			}
 			if inBatch != 0 { // the first loop will almost always hit default & be size zero
 				c.s.bufferedWriteFrames.Observe(float64(inBatch))
@@ -1991,7 +2019,10 @@ func (c *sclient) sendMeshUpdates() error {
 // returns, do not retain slices.
 // It does not flush its bufio.Writer.
 func (c *sclient) sendPacket(srcKey key.NodePublic, contents []byte) (err error) {
+	start := c.s.clock.Now()
 	defer func() {
+		dur := c.s.clock.Since(start)
+		c.s.sendPacketDurationMS.Observe(float64(dur.Milliseconds()))
 		// Stats update.
 		if err != nil {
 			c.s.recordDrop(contents, srcKey, c.key, dropReasonWriteError)
@@ -2242,6 +2273,11 @@ func (s *Server) ExpVar() expvar.Var {
 	m.Set("counter_mesh_update_batch_size", s.meshUpdateBatchSize)
 	m.Set("counter_mesh_update_loop_count", s.meshUpdateLoopCount)
 	m.Set("counter_buffered_write_frames", s.bufferedWriteFrames)
+	m.Set("counter_write_flush_duration_ms", s.writeFlushDurationMS)
+	m.Set("counter_slow_flushes", &s.slowFlushes)
+	m.Set("counter_send_queue_depth", s.sendQueueDepth)
+	m.Set("counter_disco_queue_depth", s.discoQueueDepth)
+	m.Set("counter_send_packet_duration_ms", s.sendPacketDurationMS)
 	var expvarVersion expvar.String
 	expvarVersion.Set(version.Long())
 	m.Set("version", &expvarVersion)

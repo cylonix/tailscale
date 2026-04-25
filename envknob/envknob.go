@@ -154,6 +154,26 @@ func RegisterBool(envVar string) func() bool {
 	return func() bool { return *p }
 }
 
+// __BEGIN_CYLONIX_MOD__
+// RegisterBoolLookUp returns a func that gets the named environment variable,
+// WITH a map lookup per call. This is useful for cases where the value may be
+// set by a different process, and we want to check the current value each time.
+// It assumes that mutations happen via envknob.Setenv.
+// Use only when it is not in the packet path and performance is not critical.
+func RegisterBoolWithLookUpPerCall(envVar string) func() bool {
+	RegisterBool(envVar)
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if p, ok := regBool[envVar]; ok {
+			return *p
+		}
+		return false
+	}
+}
+
+// __END_CYLONIX_MOD__
+
 // RegisterOptBool returns a func that gets the named environment variable,
 // without a map lookup per call. It assumes that mutations happen via
 // envknob.Setenv.

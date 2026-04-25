@@ -13,6 +13,7 @@ import Button from "src/ui/button"
 import Popover from "src/ui/popover"
 import ProfilePic from "src/ui/profile-pic"
 import { assertNever, isHTTPS } from "src/utils/util"
+import { Env } from "src/env"
 
 export default function LoginToggle({
   node,
@@ -119,7 +120,7 @@ function TriggerWhenReading({
     >
       <Eye />
       <div className="text-white leading-snug ml-2 mr-1">Viewing</div>
-      <ChevronDown className="stroke-white w-[15px] h-[15px]" />
+          <ChevronDown className="stroke-white w-[15px] h-[15px]" />
       {auth.viewerIdentity && (
         <ProfilePic
           className="ml-2"
@@ -252,14 +253,14 @@ function LoginModeContent({
             ) : !node.ACLAllowsAnyIncomingTraffic ? (
               // Tailnet ACLs don't allow access to anyone.
               <>
-                The current tailnet policy file does not allow connecting to
+                The current mesh network policy file does not allow connecting to
                 this device.
               </>
             ) : (
               // ACLs don't allow access to this user specifically.
               <>
-                Cannot access this device’s Tailscale IP. Make sure you are
-                connected to your tailnet, and that your policy file allows
+                Cannot access this device’s {Env.appName} IP. Make sure you are
+                connected to your mesh network, and that your policy file allows
                 access.
               </>
             )}{" "}
@@ -284,7 +285,7 @@ function LoginModeContent({
             // we don't know if the user can connect over TS, so
             // provide extra tips in case they have trouble.
             <p className="text-gray-500 text-xs font-semibold pt-2">
-              Make sure you are connected to your tailnet, and that your policy
+              Make sure you are connected to your mesh network, and that your policy
               file allows access.
             </p>
           )}

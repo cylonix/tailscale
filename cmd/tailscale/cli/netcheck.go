@@ -41,7 +41,7 @@ import (
 
 var netcheckCmd = &ffcli.Command{
 	Name:       "netcheck",
-	ShortUsage: "tailscale netcheck",
+	ShortUsage: " cylonix netcheck",
 	ShortHelp:  "Print an analysis of local network conditions",
 	Exec:       runNetcheck,
 	FlagSet:    netcheckFlagSet,
@@ -49,6 +49,8 @@ var netcheckCmd = &ffcli.Command{
 
 var netcheckFlagSet = func() *flag.FlagSet {
 	fs := newFlagSet("netcheck")
+	// CYLONIX_ADD: --full requests an incremental-but-fully-populated report.
+	fs.BoolVar(&netcheckArgs.full, "full", false, "execute full report")
 	fs.StringVar(&netcheckArgs.format, "format", "", `output format; empty (for human-readable), "json" or "json-line"`)
 	fs.DurationVar(&netcheckArgs.every, "every", 0, "if non-zero, do an incremental report with the given frequency")
 	fs.BoolVar(&netcheckArgs.verbose, "verbose", false, "verbose logs")
@@ -63,6 +65,7 @@ var netcheckArgs struct {
 	verbose     bool
 	bindAddress string
 	bindPort    int
+	full        bool // CYLONIX_ADD
 }
 
 func runNetcheck(ctx context.Context, args []string) error {
@@ -120,7 +123,7 @@ func runNetcheck(ctx context.Context, args []string) error {
 	dm, err := localClient.CurrentDERPMap(ctx)
 	noRegions := dm != nil && len(dm.Regions) == 0
 	if noRegions {
-		log.Printf("No DERP map from tailscaled; using default.")
+		log.Printf("No DERP map from cylonixd; using default.")
 	}
 	if err != nil || noRegions {
 		hc := &http.Client{
@@ -135,6 +138,14 @@ func runNetcheck(ctx context.Context, args []string) error {
 	}
 	for {
 		t0 := time.Now()
+
+		// __BEGIN_CYLONIX_ADD__
+		if netcheckArgs.full {
+			c.Logf("netcheck: Running full report...")
+			c.MakeNextReportFull()
+		}
+		// __END_CYLONIX_ADD__
+
 		report, err := c.GetReport(ctx, dm, nil)
 		d := time.Since(t0)
 		if netcheckArgs.verbose {

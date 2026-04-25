@@ -1,12 +1,13 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build ios || js
+//go:build js
 
 package magicsock
 
 import (
 	"net/netip"
+	"time" // __CYLONIX_ADD__
 
 	"tailscale.com/types/opt"
 )
@@ -31,4 +32,12 @@ func debugRingBufferMaxSizeBytes() int { return 0 }
 func inTest() bool                     { return false }
 func debugPeerMap() bool               { return false }
 func pretendpoints() []netip.AddrPort  { return []netip.AddrPort{} }
-func debugNeverDirectUDP() bool        { return false }
+func debugNeverDirectUDP() bool { return false }
+
+// CYLONIX_ADD: stub overrides for cylonix's tunable timing knobs and a flag
+// allowing wireguard-only exit nodes to be selected even when the magicsock
+// path is forced to DERP.
+func trustUDPAddrDurationOverride() time.Duration { return 0 }
+func heartbeatIntervalOverride() time.Duration    { return 0 }
+func pingTimeoutDurationOverride() time.Duration  { return 0 }
+func debugAlwaysDERPAllowWgOnlyExitNode() bool    { return false }

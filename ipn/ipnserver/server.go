@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os/user"
@@ -349,7 +350,7 @@ func (a *actor) Permissions(operatorUID string) (read, write bool) {
 		return true, true
 	}
 	if a.ci.IsUnixSock() {
-		return true, !a.ci.IsReadonlyConn(operatorUID, logger.Discard)
+		return true, !a.ci.IsReadonlyConn(operatorUID, log.Printf)
 	}
 	return false, false
 }

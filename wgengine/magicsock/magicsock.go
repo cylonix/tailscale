@@ -408,6 +408,10 @@ type Conn struct {
 	// homeDERPGauge is the usermetric gauge for the home DERP region ID.
 	// This can be nil when [Options.Metrics] are not enabled.
 	homeDERPGauge *usermetric.Gauge
+
+	// CYLONIX_ADD: addresses of the wg-only peers, used by the
+	// debugAlwaysDERPAllowWgOnlyExitNode path.
+	wgOnlyPeerAddrs []netip.AddrPort
 }
 
 // SetDebugLoggingEnabled controls whether spammy debug logging is enabled.
@@ -1712,6 +1716,25 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 					continue
 				}
 				ipp := msg.Addr.(*net.UDPAddr).AddrPort()
+				// CYLONIX_ADD: when debugAlwaysDERP is forced AND
+				// debugAlwaysDERPAllowWgOnlyExitNode is set, allow only the
+				// wg-only peer addresses through the direct UDP path; drop
+				// the rest so they fall back to DERP.
+				if debugAlwaysDERPAllowWgOnlyExitNode() && debugAlwaysDERP() {
+					found := false
+					c.mu.Lock()
+					for _, addr := range c.wgOnlyPeerAddrs {
+						if addr.Addr().Compare(ipp.Addr()) == 0 {
+							found = true
+							break
+						}
+					}
+					c.mu.Unlock()
+					if !found {
+						sizes[i] = 0
+						continue
+					}
+				}
 				if ep, size, isGeneveEncap, ok := c.receiveIP(msg.Buffers[0][:msg.N], ipp, &epCache); ok {
 					if isGeneveEncap {
 						if peerRelayPacketMetric != nil {
@@ -3002,6 +3025,10 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
 	curPeers := views.SliceOf(peers)
 	c.peers = curPeers
 
+	// CYLONIX_ADD: refresh the wg-only peer address list whenever the
+	// netmap changes; this feeds the wgOnly-exit-node UDP filter above.
+	c.setWgOnlyPeerAddrsLocked(nm.Peers)
+
 	// [debugFlags] are mutable in [Conn.SetSilentDisco] &
 	// [Conn.SetProbeUDPLifetime]. These setters are passed [controlknobs.Knobs]
 	// values by [ipnlocal.LocalBackend] around netmap reception.
@@ -3492,10 +3519,12 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
 		return nil
 	}
 
-	if debugAlwaysDERP() {
-		c.logf("disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
+	if debugAlwaysDERP() && !debugAlwaysDERPAllowWgOnlyExitNode() { // __CYLONIX_MOD__
+		c.logf("magicsock: bindSocket: disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
 		ruc.setConnLocked(newBlockForeverConn(), "", c.bind.BatchSize())
 		return nil
+	} else {
+		c.logf("magicsock: bindSocket: enabled %v since TS_DEBUG_ALWAYS_USE_DERP is false", network)
 	}
 
 	// Build a list of preferred ports.
@@ -3792,11 +3821,11 @@ const (
 
 	// heartbeatInterval is how often pings to the best UDP address
 	// are sent.
-	heartbeatInterval = 3 * time.Second
+	heartbeatIntervalDefault = 3 * time.Second // __CYLONIX_MOD__
 
 	// trustUDPAddrDuration is how long we trust a UDP address as the exclusive
 	// path (without using DERP) without having heard a Pong reply.
-	trustUDPAddrDuration = 6500 * time.Millisecond
+	trustUDPAddrDurationDefault = 6500 * time.Millisecond // __CYLONIX_MOD__
 
 	// goodEnoughLatency is the latency at or under which we don't
 	// try to upgrade to a better path.
@@ -3808,11 +3837,46 @@ const (
 	endpointsFreshEnoughDuration = 27 * time.Second
 )
 
+// __BEGIN_CYLONIX_ADD__
+// The following overrides allow for environment variable based
+// configuration to improve the connection between international or unstable
+// direct connections which may still be preferred than DERP since DERP
+// might be blocked or have very high latency. e.g. a cross continent
+// multi-cloud k8s mesh network deployment.
+
+// trustUDPAddrDuration returns the trustUDPAddrDuration, using the
+// TS_TRUST_UDP_ADDR_DURATION environment variable override if set.
+func trustUDPAddrDuration() time.Duration {
+	if d := trustUDPAddrDurationOverride(); d > 0 {
+		return d
+	}
+	return trustUDPAddrDurationDefault
+}
+
+// heartbeatInterval returns the heartbeatInterval, using the
+// TS_HEARTBEAT_INTERVAL environment variable override if set.
+func heartbeatInterval() time.Duration {
+	if d := heartbeatIntervalOverride(); d > 0 {
+		return d
+	}
+	return heartbeatIntervalDefault
+}
+
+// pingTimeoutDuration returns the pingTimeoutDuration, using the
+// TS_HEARTBEAT_PING_TIMEOUT environment variable override if set.
+func pingTimeoutDuration() time.Duration {
+	if d := pingTimeoutDurationOverride(); d > 0 {
+		return d
+	}
+	return pingTimeoutDurationDefault
+}
+// __END_CYLONIX_ADD__
+
 // Constants that are variable for testing.
 var (
 	// pingTimeoutDuration is how long we wait for a pong reply before
 	// assuming it's never coming.
-	pingTimeoutDuration = 5 * time.Second
+	pingTimeoutDurationDefault = 5 * time.Second // __CYLONIX_MOD__
 
 	// discoPingInterval is the minimum time between pings
 	// to an endpoint. (Except in the case of CallMeMaybe frames
@@ -4323,3 +4387,18 @@ func (c *Conn) maybeSendTSMPDiscoAdvert(de *endpoint) {
 		})
 	}
 }
+
+// __BEGIN_CYLONIX_ADD__
+// setWgOnlyPeerAddrsLocked sets the list of WireGuard-only peer addresses.
+// c.mu lock must be held.
+func (c *Conn) setWgOnlyPeerAddrsLocked(peers []tailcfg.NodeView) {
+	var addrs []netip.AddrPort
+	for _, p := range peers {
+		if p.IsWireGuardOnly() {
+			addrs = append(addrs, p.Endpoints().AsSlice()...)
+		}
+	}
+	c.wgOnlyPeerAddrs = addrs
+}
+
+// __END_CYLONIX_ADD__

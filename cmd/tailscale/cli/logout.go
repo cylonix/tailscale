@@ -19,11 +19,11 @@ var logoutArgs struct {
 
 var logoutCmd = &ffcli.Command{
 	Name:       "logout",
-	ShortUsage: "tailscale logout",
-	ShortHelp:  "Disconnect from Tailscale and expire current node key",
+	ShortUsage: "cylonix logout",
+	ShortHelp:  "Disconnect from Cylonix and expire current node key",
 
 	LongHelp: strings.TrimSpace(`
-"tailscale logout" brings the network down and invalidates
+"cylonix logout" brings the network down and invalidates
 the current node key, forcing a future use of it to cause
 a reauthentication.
 `),

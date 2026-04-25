@@ -616,6 +616,8 @@ func (pm *profileManager) profilePrefs(p ipn.LoginProfileView) (ipn.PrefsView, e
 // If the profile exists but is not accessible to the current user, it returns an [errProfileAccessDenied].
 // If the profile does not exist, it returns an [errProfileNotFound].
 func (pm *profileManager) SwitchToProfileByID(id ipn.ProfileID) (_ ipn.LoginProfileView, changed bool, err error) {
+	// CYLONIX_ADD: extra logging at profile switch entry/exit for diagnostics.
+	pm.logf("switching to profile by id %q", id)
 	if id == pm.currentProfile.ID() {
 		return pm.currentProfile, false, nil
 	}
@@ -828,7 +830,25 @@ func (pm *profileManager) SwitchToNewProfile() {
 // SwitchToNewProfileForUser is like [profileManager.SwitchToNewProfile], but it switches to the
 // specified user and sets that user as the profile owner for the new profile.
 func (pm *profileManager) SwitchToNewProfileForUser(uid ipn.WindowsUserID) {
+	// CYLONIX_MOD: capture the current operator user so that, when switching
+	// to a fresh empty profile on Linux, the GUI can keep accessing the
+	// local clients as provisioned by the operator. Upstream's
+	// SwitchToProfile path resets prefs to empty and would otherwise lose
+	// this binding. We re-apply OperatorUser via SetPrefs after the switch.
+	currentOpUser := ""
+	if pm.prefs.Valid() {
+		currentOpUser = pm.prefs.OperatorUser()
+		pm.logf("current operator user: %q", currentOpUser)
+	}
 	pm.SwitchToProfile(pm.NewProfileForUser(uid))
+	if pm.goos == "linux" && currentOpUser != "" {
+		pm.logf("inheriting operator user %q on new profile for user %q", currentOpUser, uid)
+		prefs := pm.prefs.AsStruct()
+		prefs.OperatorUser = currentOpUser
+		// SetPrefs may fail if no current profile is loaded yet; ignore the
+		// error here because we're best-effort copying for GUI continuity.
+		_ = pm.SetPrefs(prefs.View(), ipn.NetworkProfile{})
+	}
 }
 
 // zeroProfile is a read-only view of a new, empty profile that is not persisted to the store.
@@ -916,12 +936,12 @@ func newProfileManagerWithGOOS(store ipn.StateStore, logf logger.Logf, ht *healt
 	logf = logger.WithPrefix(logf, "pm: ")
 	stateKey, err := readAutoStartKey(store, goos)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read auto start key: %w", err)
 	}
 
 	knownProfiles, err := readKnownProfiles(store)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read know profiles: %w", err)
 	}
 
 	metricProfileCount.Set(int64(len(knownProfiles)))
@@ -949,7 +969,9 @@ func newProfileManagerWithGOOS(store ipn.StateStore, logf logger.Logf, ht *healt
 		// No known profiles, try a migration.
 		pm.dlogf("no known profiles; trying to migrate from legacy prefs")
 		if initialProfile, err = pm.migrateFromLegacyPrefs(pm.currentUserID); err != nil {
-
+			// CYLONIX_MOD: wrap error with context to help debugging on
+			// devices where state migration fails.
+			return nil, fmt.Errorf("failed to migrate legacy prefs: %w", err)
 		}
 	}
 	if !initialProfile.Valid() {

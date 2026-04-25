@@ -15,6 +15,8 @@ import (
 
 	"tailscale.com/release/dist"
 	"tailscale.com/release/dist/cli"
+	cyqnap "tailscale.com/release/dist/cylonix-qnap"       // __CYLONIX_ADD__
+	cysynolo "tailscale.com/release/dist/cylonix-synology" // __CYLONIX_ADD__
 	"tailscale.com/release/dist/qnap"
 	"tailscale.com/release/dist/synology"
 	"tailscale.com/release/dist/unixpkgs"
@@ -28,6 +30,10 @@ var (
 	qnapKeyName                         string
 	qnapCertificateBase64               string
 	qnapCertificateIntermediariesBase64 string
+	// CYLONIX_ADD: legacy private-key/certificate paths for the cylonix-qnap
+	// signing flow (separate from upstream's new gcloud-based signing).
+	qnapPrivateKeyPath  string
+	qnapCertificatePath string
 )
 
 func getTargets() ([]dist.Target, error) {
@@ -47,12 +53,19 @@ func getTargets() ([]dist.Target, error) {
 	//
 	// To build for package center, run
 	// ./tool/go run ./cmd/dist build --synology-package-center synology
-	ret = append(ret, synology.Targets(synologyPackageCenter, nil)...)
+	// CYLONIX_ADD: also build the cylonix-branded synology packages.
+	ret = append(ret, cysynolo.Targets(synologyPackageCenter, nil)...)
 	qnapSigningArgs := []string{gcloudCredentialsBase64, gcloudProject, gcloudKeyring, qnapKeyName, qnapCertificateBase64, qnapCertificateIntermediariesBase64}
 	if cmp.Or(qnapSigningArgs...) != "" && slices.Contains(qnapSigningArgs, "") {
 		return nil, errors.New("all of --gcloud-credentials, --gcloud-project, --gcloud-keyring, --qnap-key-name, --qnap-certificate and --qnap-certificate-intermediaries must be set")
 	}
 	ret = append(ret, qnap.Targets(gcloudCredentialsBase64, gcloudProject, gcloudKeyring, qnapKeyName, qnapCertificateBase64, qnapCertificateIntermediariesBase64)...)
+	// CYLONIX_ADD: also build the cylonix-branded QNAP packages. The cylonix
+	// QNAP target still uses the old (privateKeyPath, certificatePath) signing
+	// flow rather than the new gcloud-based signing; pass --qnap-private-key-path
+	// and --qnap-certificate-path on the command line to enable signing.
+	// TODO(cylonix): port cyqnap to the new gcloud signing API.
+	ret = append(ret, cyqnap.Targets(qnapPrivateKeyPath, qnapCertificatePath)...)
 	return ret, nil
 }
 
@@ -67,6 +80,10 @@ func main() {
 			subcmd.FlagSet.StringVar(&qnapKeyName, "qnap-key-name", "", "name of GCP key to use when signing QNAP builds")
 			subcmd.FlagSet.StringVar(&qnapCertificateBase64, "qnap-certificate", "", "base64 encoded certificate to use when signing QNAP builds")
 			subcmd.FlagSet.StringVar(&qnapCertificateIntermediariesBase64, "qnap-certificate-intermediaries", "", "base64 encoded intermediary certificate to use when signing QNAP builds")
+			// CYLONIX_ADD: legacy private-key/certificate paths for the
+			// cylonix-qnap signing flow.
+			subcmd.FlagSet.StringVar(&qnapPrivateKeyPath, "qnap-private-key-path", "", "path to private key to sign cylonix QNAP builds (cylonix only)")
+			subcmd.FlagSet.StringVar(&qnapCertificatePath, "qnap-certificate-path", "", "path to certificate to sign cylonix QNAP builds (cylonix only)")
 		}
 	}
 

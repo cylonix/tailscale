@@ -195,6 +195,21 @@ func (ms *mapSession) HandleNonKeepAliveMapResponse(ctx context.Context, resp *t
 		upgradeNode(p)
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	if resp.DERPMap != nil {
+		for _, r := range resp.DERPMap.Regions {
+			if r != nil {
+				for _, n := range r.Nodes {
+					if n.XRay != nil {
+						ms.logf("DERP region %d/%v node xray underlay: %#v",
+								r.RegionID, n.Name, *n.XRay)
+					}
+				}
+			}
+		}
+	}
+	// __END_CYLONIX_ADD__
+
 	// Call Node.InitDisplayNames on any changed nodes.
 	initDisplayNames(cmp.Or(resp.Node.View(), ms.lastNode), resp)
 

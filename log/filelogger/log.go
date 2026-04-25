@@ -27,14 +27,14 @@ const (
 // New returns a logf wrapper that appends to local disk log
 // files on Windows, rotating old log files as needed to stay under
 // file count & byte limits.
-func New(fileBasePrefix, logID string, logf logger.Logf) logger.Logf {
+func New(fileBasePrefix, programName, logID string, logf logger.Logf) logger.Logf { // __CYLONIX_MOD__
 	if runtime.GOOS != "windows" {
 		panic("not yet supported on any platform except Windows")
 	}
 	if logf == nil {
 		panic("nil logf")
 	}
-	dir := filepath.Join(os.Getenv("ProgramData"), "Tailscale", "Logs")
+	dir := filepath.Join(os.Getenv("ProgramData"), programName, "Logs") // __CYLONIX_MOD__
 
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		log.Printf("failed to create local log directory; not writing logs to disk: %v", err)

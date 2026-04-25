@@ -207,7 +207,36 @@ type DERPNode struct {
 	// CanPort80 specifies whether this DERP node is accessible over HTTP
 	// on port 80 specifically. This is used for captive portal checks.
 	CanPort80 bool `json:",omitempty"`
+
+	// __BEGIN_CYLONIX_ADD__
+	// XRay config enables an optional xray xhttp underlay for DERP HTTP.
+	// If nil, standard DERP dialing is used.
+	XRay *DERPXRay `json:"xray,omitempty"`
+	// __END_CYLONIX_ADD__
 }
+
+// __BEGIN_CYLONIX_ADD__
+// DERPXRay contains xray transport parameters for DERP clients.
+// ClientUUID, ServerPublicKey, and XHTTPTunnel are provided by the DERP map.
+type DERPXRay struct {
+	ClientUUID         string `json:"clientUUID,omitempty"`
+	ServerPublicKey    string `json:"serverPublicKey,omitempty"`
+	XHTTPTunnel        string `json:"xhttpTunnel,omitempty"`
+	RealityServerName  string `json:"realityServerName,omitempty"`
+	RealityShortID     string `json:"realityShortId,omitempty"`
+	RealityFingerprint string `json:"realityFingerprint,omitempty"`
+	RealitySpiderX     string `json:"realitySpiderX,omitempty"`
+}
+
+// Clone makes a deep copy of DERPXRay.
+func (x *DERPXRay) Clone() *DERPXRay {
+	if x == nil {
+		return nil
+	}
+	dup := *x
+	return &dup
+}
+// __END_CYLONIX_ADD__
 
 func (n *DERPNode) IsTestNode() bool {
 	return n.STUNTestIP != "" || n.IPv4 == "127.0.0.1"

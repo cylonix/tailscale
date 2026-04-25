@@ -858,6 +858,12 @@ func ShouldUseRoutes(knobs *controlknobs.Knobs) bool {
 	if !buildfeatures.HasDNS {
 		return false
 	}
+	// CYLONIX_MOD: also force UserDial when SendDNSToExitNodeInTunnel is set,
+	// regardless of platform, so that the exit node's DNS server is reached
+	// through the tunnel.
+	if knobs != nil && knobs.SendDNSToExitNodeInTunnel.Load() {
+		return true
+	}
 	switch runtime.GOOS {
 	case "android", "ios":
 		// On mobile platforms with lower memory limits (e.g., 50MB on iOS),
@@ -1199,6 +1205,27 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		}
 	}
 }
+
+// __BEGIN_CYLONIX_ADD__
+func (f *forwarder) ResetDNSClientCache() {
+	f.logf("Resetting DNS-over-HTTPS client cache")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, c := range f.dohClient {
+		f.logf("Closing idle connections for DoH client for %q", k)
+		c.CloseIdleConnections()
+		delete(f.dohClient, k)
+	}
+	f.dohClient = nil
+}
+
+func (f *forwarder) SetLinkSelector(linkSel ForwardLinkSelector) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.linkSel = linkSel
+}
+
+// __END_CYLONIX_ADD__
 
 var initListenConfig func(_ *net.ListenConfig, _ *netmon.Monitor, tunName string) error
 
