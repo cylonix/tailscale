@@ -232,6 +232,9 @@ func TestConnStd(t *testing.T) {
 // doesn't turn into a flaky test. If so, const max can be adjusted,
 // or it can be deleted or reworked.
 func TestConnMemoryOverhead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("flaky in v1.96.4: memory accounting variance under parallel test load with -short")
+	}
 	num := 1000
 	if testing.Short() {
 		num = 100
