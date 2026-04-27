@@ -241,11 +241,7 @@ func (m *manager) OpenFile(baseName string) (rc io.ReadCloser, size int64, err e
 	return f, fi.Size(), nil
 }
 
-// __BEGIN_CYLONIX_ADD__
-// GetFilePath returns the absolute filesystem path for a received file. This
-// is a cylonix-only accessor used by the peer-message UI on platforms where a
-// real on-disk path is meaningful (i.e. NOT Android SAF). The fsFileOps type
-// is only defined on non-android builds (see fileops_fs.go), so the actual
-// type-assertion implementation lives in retrieve_fs.go alongside an android
-// stub in retrieve_android.go.
-// __END_CYLONIX_MOD__
+// __CYLONIX_ADD__ GetFilePath lives in retrieve_fs.go (//go:build !android).
+// On android the FileOps backing is SAF (URIs, not filesystem paths) and the
+// cylonix callers there fall back to joining the configured directFileRoot
+// with the basename, so we don't compile GetFilePath at all on android.
