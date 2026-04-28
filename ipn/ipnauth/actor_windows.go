@@ -1,6 +1,15 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
+// __CYLONIX_MOD__ Gate this file out of the ts_tcp_safesocket build:
+// NewWindowsActorWithToken calls newToken(windows.Token), which only
+// exists in the named-pipe ipnauth_windows.go variant. The cylonix
+// ts_tcp_safesocket variant (ipnauth_tcp_windows.go) carries its own
+// token type without the windows.Token plumbing, and nothing in the
+// tree calls NewWindowsActorWithToken / WindowsActor outside this
+// file, so excluding it under the tag is safe.
+//go:build !ts_tcp_safesocket
+
 package ipnauth
 
 import (

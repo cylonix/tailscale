@@ -1,6 +1,11 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
+// __CYLONIX_MOD__ Match sessions_windows.go: the //sys annotations
+// reference types (_MSG, _WNDCLASSEX) defined there, so this file
+// must follow the same build constraint.
+//go:build windows && !ts_tcp_safesocket
+
 package desktop
 
 //go:generate go run golang.org/x/sys/windows/mkwinsyscall -output zsyscall_windows.go mksyscall.go

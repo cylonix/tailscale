@@ -1,6 +1,13 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
+// __CYLONIX_MOD__ Exclude under ts_tcp_safesocket since this file uses
+// ipnauth.WindowsActor / NewWindowsActorWithToken, which only exist in
+// the named-pipe ipnauth_windows.go variant. The tcp-mode session
+// manager falls through to the ErrNotImplemented stub in
+// sessions_notwindows.go.
+//go:build !ts_tcp_safesocket
+
 package desktop
 
 import (
