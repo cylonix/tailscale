@@ -19,7 +19,7 @@ import (
 	"tailscale.com/ipn"
 )
 
-const cylonixStateTraceCapacity = 64
+const cylonixStateTraceCapacity = 8
 
 // CylonixStateTrace is one recorded state notification send. Exported for JSON
 // rendering via the LocalAPI.

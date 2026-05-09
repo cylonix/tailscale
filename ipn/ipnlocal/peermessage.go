@@ -92,10 +92,11 @@ func init() {
 
 func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payload PeerMessageTransportPayload) (*PeerMessageSendResult, error) {
 	b.ensurePeerMessageQueueWorker()
+	policy := normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy)
 	nm := b.NetMap()
 	if nm == nil {
 		err := fmt.Errorf("no network map available")
-		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+		if policy == peerMessageDeliveryPolicyQueue {
 			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
 				return nil, enqueueErr
 			}
@@ -111,7 +112,7 @@ func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payl
 
 	peer, err := resolvePeerByRef(nm, peerRef)
 	if err != nil {
-		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+		if policy == peerMessageDeliveryPolicyQueue {
 			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
 				return nil, enqueueErr
 			}
@@ -126,7 +127,7 @@ func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payl
 	}
 
 	if err := b.sendPeerMessageNow(ctx, nm, peer, peerRef, payload); err != nil {
-		if normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy) == peerMessageDeliveryPolicyQueue {
+		if policy == peerMessageDeliveryPolicyQueue {
 			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
 				return nil, enqueueErr
 			}
@@ -467,3 +468,4 @@ func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	io.WriteString(w, "{}\n")
 }
+

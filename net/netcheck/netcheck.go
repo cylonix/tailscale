@@ -245,7 +245,7 @@ type Client struct {
 	// __BEGIN_CYLONIX_ADD__
 	// xrayProbeMu guards xrayProbeClients. It is separate from mu to avoid
 	// holding the main lock during slow xray dial operations.
-	xrayProbeMu     sync.Mutex
+	xrayProbeMu      sync.Mutex
 	xrayProbeClients map[int]*derphttp.Client // one cached derphttp.Client per xray region ID
 	// __END_CYLONIX_ADD__
 }
@@ -313,6 +313,7 @@ func (c *Client) closeXRayProbeClients() {
 		delete(c.xrayProbeClients, id)
 	}
 }
+
 // __END_CYLONIX_ADD__
 
 // MakeNextReportFull forces the next GetReport call to be a full
@@ -1105,7 +1106,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 				go func(reg *tailcfg.DERPRegion) {
 					defer xwg.Done()
 					if d, ip, err := c.measureHTTPSLatency(ctx, reg); err != nil {
-						c.logf("[v1] netcheck: measuring xray HTTPS latency of %v (%d): %v", reg.RegionCode, reg.RegionID, err)
+						c.logf("[v2] netcheck: measuring xray HTTPS latency of %v (%d): %v", reg.RegionCode, reg.RegionID, err)
 					} else {
 						rs.mu.Lock()
 						if l, ok := rs.report.RegionLatency[reg.RegionID]; !ok {
@@ -1247,7 +1248,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 		if dl, ok := ctx.Deadline(); ok {
 			remaining = time.Until(dl).Round(time.Millisecond).String()
 		}
-		c.logf("netcheck: xray: measureHTTPSLatency START region %d, parent ctx remaining=%s", reg.RegionID, remaining)
+		c.logf("[v2] netcheck: xray: measureHTTPSLatency START region %d, parent ctx remaining=%s", reg.RegionID, remaining)
 	}
 	// __END_CYLONIX_ADD__
 
@@ -1277,13 +1278,13 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	conn, node, noTLS, err := dc.DialRegionConn(ctx, reg)
 	if err != nil {
 		if isXRay {
-			c.logf("netcheck: measureHTTPSLatency region %d: xray DialRegionConn failed after %v: %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond), err)
+			c.logf("[v2] netcheck: measureHTTPSLatency region %d: xray DialRegionConn failed after %v: %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond), err)
 		}
 		return 0, ip, err
 	}
 	defer conn.Close()
 	if noTLS {
-		c.logf("netcheck: measureHTTPSLatency region %d: xray DialRegionConn took %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond))
+		c.logf("[v2] netcheck: measureHTTPSLatency region %d: xray DialRegionConn took %v", reg.RegionID, c.timeNow().Sub(t0).Round(time.Millisecond))
 	}
 
 	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
@@ -1316,7 +1317,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 		return 0, ip, fmt.Errorf("no unexpected RemoteAddr %#v", conn.RemoteAddr())
 	}
 	if isXRay {
-		c.logf("netcheck: xray: region %d: resolved ip=%v", reg.RegionID, ip)
+		c.logf("[v2] netcheck: xray: region %d: resolved ip=%v", reg.RegionID, ip)
 	}
 
 	var tr *http.Transport
@@ -1375,7 +1376,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 		if dl, ok := ctx.Deadline(); ok {
 			remaining = time.Until(dl).Round(time.Millisecond).String()
 		}
-		c.logf("netcheck: xray: region %d: sending HTTP GET %s://%s/derp/latency-check (ctx remaining=%s)", reg.RegionID, scheme, node.HostName, remaining)
+		c.logf("[v2] netcheck: xray: region %d: sending HTTP GET %s://%s/derp/latency-check (ctx remaining=%s)", reg.RegionID, scheme, node.HostName, remaining)
 	}
 	// __END_CYLONIX_ADD__
 
@@ -1406,7 +1407,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	}
 
 	if noTLS {
-		c.logf("netcheck: measureHTTPSLatency region %d: xray latency probe succeeded: %v", reg.RegionID, reqDur.Round(time.Millisecond))
+		c.logf("[v2] netcheck: measureHTTPSLatency region %d: xray latency probe succeeded: %v", reg.RegionID, reqDur.Round(time.Millisecond))
 	}
 
 	// return the connection duration, not the request duration, as this is the
@@ -1925,6 +1926,7 @@ func regionHasXRayNode(r *tailcfg.DERPRegion) bool {
 	}
 	return false
 }
+
 // __END_CYLONIX_ADD__
 
 func maxDurationValue(m map[int]time.Duration) (max time.Duration) {

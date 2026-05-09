@@ -108,6 +108,9 @@ func Setenv(envVar, val string) {
 	if p := regDuration[envVar]; p != nil {
 		setDurationLocked(p, envVar, val)
 	}
+	if p := regInt[envVar]; p != nil {
+		setIntLocked(p, envVar, val)
+	}
 }
 
 // String returns the named environment variable, using os.Getenv.
@@ -169,6 +172,25 @@ func RegisterBoolWithLookUpPerCall(envVar string) func() bool {
 			return *p
 		}
 		return false
+	}
+}
+
+// RegisterInt returns a func that gets the named environment variable as an
+// integer, without a map lookup per call. It assumes that any mutations happen
+// via envknob.Setenv.
+func RegisterIntLookupPerCall(envVar string) func() int {
+	RegisterInt(envVar)
+
+	return func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		p, ok := regInt[envVar]
+		if !ok {
+			log.Printf("%v val=0", envVar)
+			return 0
+		}
+		log.Printf("%v val=%d", envVar, *p)
+		return *p
 	}
 }
 

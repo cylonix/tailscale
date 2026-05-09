@@ -161,6 +161,16 @@ func (m *manager) PutFile(id clientID, baseName string, r io.Reader, offset, len
 
 	m.totalReceived.Add(1)
 	m.opts.SendFileNotify()
+	// __BEGIN_CYLONIX_ADD__
+	// In direct mode the staging-based FilesWaiting / WaitingFiles flow
+	// does not surface arrivals (manager.WaitingFiles returns nil), so
+	// fire a one-shot completion event so hosts can drive a desktop
+	// notification from the same code path that the staging-mode
+	// handleFilesWaiting uses.
+	if m.opts.DirectFileMode && m.opts.CylonixDirectReceiveNotify != nil {
+		m.opts.CylonixDirectReceiveNotify(baseName, finalPath, m.WaitingFileTransferID(baseName))
+	}
+	// __END_CYLONIX_ADD__
 	return fileLength, nil
 }
 

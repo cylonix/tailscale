@@ -62,6 +62,7 @@ func (c *Conn) regionHasXRayUnderlay(regionID int) bool {
 	}
 	return false
 }
+
 // __END_CYLONIX_ADD__
 
 // derpRoute is a route entry for a public key, saying that a certain
@@ -148,7 +149,7 @@ const derpXRayConnCountDefault = 8
 // derpXRayConnCount is an envknob override for the number of parallel xray
 // connections per region. 0 means use the DERP map value or the default (8).
 // Set TS_DERP_XRAY_CONN_COUNT=1 to force single-connection mode.
-var derpXRayConnCount = envknob.RegisterInt("TS_DERP_XRAY_CONN_COUNT")
+var derpXRayConnCount = envknob.RegisterIntLookupPerCall("TS_DERP_XRAY_CONN_COUNT")
 
 // xrayConnCountForRegion returns the number of parallel xray TCP connections
 // to open for regionID. Priority: envknob > DERPXRay.ConnCount > default (8).
@@ -845,7 +846,6 @@ func (c *Conn) runDerpWriter(ctx context.Context, dc *derphttp.Client, ch <-chan
 		}
 	}
 }
-
 
 func (c *connBind) receiveDERP(buffs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 	if s := c.Conn.health.ReceiveFuncStats(health.ReceiveDERP); s != nil {

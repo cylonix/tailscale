@@ -158,5 +158,6 @@ func isNotableNotify(n *ipn.Notify) bool {
 		len(n.OutgoingFiles) > 0 ||
 		n.FilesWaiting != nil ||
 		n.SuggestedExitNode != nil ||
-		n.PeerMessageEvent != nil // CYLONIX_ADD
+		n.PeerMessageEvent != nil || // CYLONIX_ADD
+		n.CylonixDirectFileReceived != nil // CYLONIX_ADD
 }

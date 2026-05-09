@@ -1,14 +1,14 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
-//go:build !android
 
 // __BEGIN_CYLONIX_ADD__
-// File added by cylonix to host (*manager).GetFilePath. Gated to non-android
-// builds because fsFileOps + joinDir are only defined for !android (see
-// fileops_fs.go), and on android the FileOps backing is SAF (content://
-// URIs, not filesystem paths), so a real path lookup isn't meaningful — the
-// cylonix android callers (libtailscale/command.go) fall back to joining
-// the configured directFileRoot with the basename rather than calling here.
+// File added by cylonix to host (*manager).GetFilePath. Originally gated to
+// !android because fsFileOps lived in fileops_fs.go (also !android); cylonix
+// now compiles fsFileOps on android too so libtailscale can run without a
+// SAF tree, and the gate has been dropped so GetFilePath works there as well
+// when the FileOps backing is fsFileOps. The android SAF branch (when a
+// ShareFileHelper is registered) still falls through to the
+// "doesn't expose a filesystem path" error below, matching prior behavior.
 //
 // Why cylonix needs GetFilePath at all (vs. the upstream OpenFile):
 //

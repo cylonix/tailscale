@@ -1,6 +1,14 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
-//go:build !android
+// __BEGIN_CYLONIX_MOD__
+// Drop the !android build constraint so cylonix's libtailscale can fall back
+// to a plain filesystem FileOps when no Storage Access Framework directory
+// has been selected. Upstream restricts this file because the Tailscale
+// upstream UI funnels every Android build through SAF; cylonix doesn't ship
+// that picker, so libtailscale ends up with no helper and no taildrop
+// backend at all without this fallback. The fsFileOps implementation only
+// uses portable os/io APIs, so building it on Android is safe.
+// __END_CYLONIX_MOD__
 
 package taildrop
 

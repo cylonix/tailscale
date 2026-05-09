@@ -200,7 +200,7 @@ func (c *Client) dialNodeXRay(ctx context.Context, n *tailcfg.DERPNode) (net.Con
 			localPort = port
 		}
 		addr := net.JoinHostPort("127.0.0.1", fmt.Sprint(localPort))
-		c.logf("derphttp: xray: attempting local loopback to %s", addr)
+		c.logf("[v2] derphttp: xray: attempting local loopback to %s", addr)
 		d := &net.Dialer{}
 		// Keep this probe short so we don't delay fallback to xray.
 		ctxLocal, cancel := context.WithTimeout(ctx, 1*time.Second)
@@ -246,8 +246,8 @@ func (c *Client) dialNodeXRay(ctx context.Context, n *tailcfg.DERPNode) (net.Con
 	}
 
 	tunnelPath := xrayTunnelPath(n.XRay.XHTTPTunnel)
-	c.logf("derphttp: dialing DERP node %q via xray underlay (tunnel=%s, path=%s, dest=%s)", n.HostName, n.XRay.XHTTPTunnel, tunnelPath, dest)
-	c.logf("derphttp: xray configKey: %s", configKey)
+	c.logf("[v2] derphttp: dialing DERP node %q via xray underlay (tunnel=%s, path=%s, dest=%s)", n.HostName, n.XRay.XHTTPTunnel, tunnelPath, dest)
+	c.logf("[v2] derphttp: xray configKey: %s", configKey)
 
 	instance, err := c.xrayInst.getOrCreate(configKey, configBytes)
 	if err != nil {
@@ -263,7 +263,7 @@ func (c *Client) dialNodeXRay(ctx context.Context, n *tailcfg.DERPNode) (net.Con
 	// even though the connection is healthy.  The tunnel's lifetime is
 	// governed by closing the returned net.Conn, not by context cancellation.
 	xrayCtx := context.WithoutCancel(ctx)
-	c.logf("derphttp: xray: calling core.Dial to %s", dest)
+	c.logf("[v2] derphttp: xray: calling core.Dial to %s", dest)
 	t0 := time.Now()
 	conn, err := core.Dial(xrayCtx, instance, dest)
 	dialDur := time.Since(t0)

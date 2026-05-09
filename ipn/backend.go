@@ -166,6 +166,15 @@ type Notify struct {
 	// events via watch-ipn-bus rather than the PeerMessageEventSink callback.
 	PeerMessageEvent any `json:",omitempty"` // __CYLONIX_ADD__
 
+	// CylonixDirectFileReceived, if non-nil, signals a single Taildrop
+	// file finalized in DirectFileMode (where the staging-mode
+	// FilesWaiting flow does not surface arrivals). Carries enough
+	// metadata for clients to correlate with peer-message attachments
+	// (TransferID) and to drive a "saved to Downloads/Cylonix/<name>"
+	// notification (Path / Size). Marshaled as `any` to keep the wire
+	// type stable without importing extension-specific structs here.
+	CylonixDirectFileReceived any `json:",omitempty"` // __CYLONIX_ADD__
+
 	// type is mirrored in xcode/IPN/Core/LocalAPI/Model/LocalAPIModel.swift
 }
 

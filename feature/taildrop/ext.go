@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -76,6 +77,14 @@ type Extension struct {
 	// This is currently being used for Android to use the Storage Access Framework.
 	fileOps FileOps
 
+	// __BEGIN_CYLONIX_ADD__
+	// cylonixDirectReceiveHook is registered by the host via
+	// SetCylonixDirectReceiveHook and fired once per finalized file in
+	// DirectFileMode. Used to drive desktop notifications when files
+	// land directly in the user's Downloads folder.
+	cylonixDirectReceiveHook func(baseName, finalPath, transferID string)
+	// __END_CYLONIX_ADD__
+
 	nodeBackendForTest ipnext.NodeBackend // if non-nil, pretend we're this node state for tests
 
 	mu             sync.Mutex // Lock order: lb.mu > e.mu
@@ -135,7 +144,7 @@ func (e *Extension) setMgrLocked(mgr *manager) {
 	}
 }
 
-func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, _ ipn.PrefsView, sameNode bool) {
+func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, prefs ipn.PrefsView, sameNode bool) { // __CYLONIX_MOD__ accept prefs (was _) so fileRoot can derive Downloads
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -160,7 +169,7 @@ func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, _ ipn.PrefsVie
 	isDirectFileMode := fops != nil
 	if fops == nil {
 		var fileRoot string
-		if fileRoot, isDirectFileMode = e.fileRoot(uid, activeLogin); fileRoot == "" {
+		if fileRoot, isDirectFileMode = e.fileRoot(uid, activeLogin, prefs); fileRoot == "" { // __CYLONIX_MOD__ pass prefs
 			e.logf("no Taildrop directory configured")
 			e.setMgrLocked(nil)
 			return
@@ -181,8 +190,62 @@ func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, _ ipn.PrefsVie
 		DirectFileMode: isDirectFileMode,
 		fileOps:        fops,
 		SendFileNotify: e.sendFileNotify,
+		// __CYLONIX_ADD__
+		CylonixDirectReceiveNotify: e.cylonixDirectReceiveNotify,
 	}.New())
 }
+
+// __BEGIN_CYLONIX_ADD__
+// SetCylonixDirectReceiveHook registers a callback fired by the manager
+// after a file is finalized in DirectFileMode. The host (Apple NE,
+// cylonixd binary, …) uses this to drive a "file received" notification
+// since the staging-mode FilesWaiting flow does not apply in direct
+// mode. Pass nil to clear the hook. Safe to call before or after the
+// taildrop manager has been initialized.
+func (e *Extension) SetCylonixDirectReceiveHook(cb func(baseName, finalPath, transferID string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cylonixDirectReceiveHook = cb
+}
+
+func (e *Extension) cylonixDirectReceiveNotify(baseName, finalPath, transferID string) {
+	// Surface the event on the watch-ipn-bus too so dart clients can
+	// correlate peer-message attachments without polling WaitingFiles
+	// (which returns nil in direct mode).
+	var size int64
+	if fi, err := os.Stat(finalPath); err == nil {
+		size = fi.Size()
+	}
+	if e.host != nil {
+		e.host.SendNotifyAsync(ipn.Notify{
+			CylonixDirectFileReceived: &CylonixDirectFile{
+				Name:       baseName,
+				Path:       finalPath,
+				Size:       size,
+				TransferID: transferID,
+			},
+		})
+	}
+	e.mu.Lock()
+	cb := e.cylonixDirectReceiveHook
+	e.mu.Unlock()
+	if cb != nil {
+		cb(baseName, finalPath, transferID)
+	}
+}
+
+// CylonixDirectFile carries a single direct-mode file arrival, sent on
+// the ipn.Notify bus as Notify.CylonixDirectFileReceived. Hosts use this
+// for desktop notifications and (when TransferID is non-empty) to
+// correlate with cylonix peer-message attachments.
+type CylonixDirectFile struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	TransferID string `json:"transfer_id,omitempty"`
+}
+
+// __END_CYLONIX_ADD__
 
 // fileRoot returns where to store Taildrop files for the given user and whether
 // to write received files directly to this directory, without staging them in
@@ -190,10 +253,18 @@ func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, _ ipn.PrefsVie
 //
 // It is safe to call this with b.mu held but it does not require it or acquire
 // it itself.
-func (e *Extension) fileRoot(uid tailcfg.UserID, activeLogin string) (root string, isDirect bool) {
+func (e *Extension) fileRoot(uid tailcfg.UserID, activeLogin string, prefs ipn.PrefsView) (root string, isDirect bool) { // __CYLONIX_MOD__ accept prefs
 	if v := e.directFileRoot; v != "" {
 		return v, true
 	}
+	// __BEGIN_CYLONIX_ADD__
+	// Prefer the operator user's (or current process user's) Downloads
+	// folder as the direct file root so received files land where users
+	// expect, instead of waiting in the daemon-owned staging directory.
+	if v := cylonixDefaultDownloadsRoot(prefs); v != "" {
+		return v, true
+	}
+	// __END_CYLONIX_ADD__
 	varRoot := e.sb.TailscaleVarRoot()
 	if varRoot == "" {
 		e.logf("Taildrop disabled; no state directory")

@@ -157,7 +157,10 @@ func serveFilePut(h *localapi.Handler, w http.ResponseWriter, r *http.Request) {
 			Name:         filenameEscaped,
 			DeclaredSize: r.ContentLength,
 		}
-		singleFilePut(h, r.Context(), progressUpdates, w, r.Body, dstURL, file)
+		// __CYLONIX_MOD__ pass empty cylonixTransferID — the random ID
+		// above is for progress tracking only, not a peer-message
+		// transfer ID.
+		singleFilePut(h, r.Context(), progressUpdates, w, r.Body, dstURL, file, "")
 	case "POST":
 		multiFilePost(h, progressUpdates, w, r, peerID, dstURL)
 	default:
@@ -215,7 +218,21 @@ func multiFilePost(h *localapi.Handler, progressUpdates chan (ipn.OutgoingFile),
 			continue
 		}
 
-		if !singleFilePut(h, r.Context(), progressUpdates, ww, part, dstURL, outgoingFilesByName[part.FileName()]) {
+		// __BEGIN_CYLONIX_MOD__
+		// Reset the buffered writer between files so successful PUT
+		// responses from previous iterations don't accumulate. The
+		// reverse proxy in singleFilePut appends headers via
+		// Header().Add (Go's stdlib reverse proxy never deduplicates),
+		// so without this reset Content-Length and friends show up N
+		// times in the final flush and the next hop rejects the
+		// reply as malformed — manifesting as multi-attachment sends
+		// failing on macOS while single-attachment sends work.
+		ww.reset()
+		// __END_CYLONIX_MOD__
+		of := outgoingFilesByName[part.FileName()]
+		// __CYLONIX_MOD__ forward of.ID as the cylonix peer-message
+		// transfer ID since manifest IDs are dart-supplied.
+		if !singleFilePut(h, r.Context(), progressUpdates, ww, part, dstURL, of, of.ID) {
 			return
 		}
 
@@ -235,6 +252,18 @@ type multiFilePostResponseWriter struct {
 	statusCode int
 	body       *bytes.Buffer
 }
+
+// __BEGIN_CYLONIX_ADD__
+// reset clears the buffered writer between successful singleFilePut calls
+// so the per-file reverse-proxy responses don't accumulate. See the call
+// site in multiFilePost for the rationale.
+func (ww *multiFilePostResponseWriter) reset() {
+	ww.header = nil
+	ww.statusCode = 0
+	ww.body = nil
+}
+
+// __END_CYLONIX_ADD__
 
 func (ww *multiFilePostResponseWriter) Header() http.Header {
 	if ww.header == nil {
@@ -276,6 +305,10 @@ func singleFilePut(
 	body io.Reader,
 	dstURL *url.URL,
 	outgoingFile ipn.OutgoingFile,
+	// __CYLONIX_ADD__ cylonix peer-message transfer ID to forward as a
+	// header to the receiver, or "" if this is not a cylonix peer
+	// messaging send (e.g. an upstream c.PushFile call).
+	cylonixTransferID string,
 ) bool {
 	outgoingFile.Started = time.Now()
 	body = progresstracking.NewReader(body, 1*time.Second, func(n int, err error) {
@@ -336,6 +369,18 @@ func singleFilePut(
 		return false
 	}
 	outReq.ContentLength = outgoingFile.DeclaredSize
+	// __BEGIN_CYLONIX_ADD__
+	// Forward the cylonix peer-message transfer ID from the manifest so the
+	// receiver can correlate the taildropped file with its corresponding
+	// peer message attachment. The receiver's handlePeerPut writes this into
+	// a sidecar consumed by retrieve.go's WaitingFiles ID field. Only set
+	// when the caller passed in a real cylonix transfer ID (multi-file POST
+	// path); the single-file PUT path's progress-tracking ID is auto-
+	// generated and must not leak as a transfer ID.
+	if cylonixTransferID != "" {
+		outReq.Header.Set("X-Cylonix-Transfer-ID", cylonixTransferID)
+	}
+	// __END_CYLONIX_ADD__
 	if offset > 0 {
 		h.Logf("resuming put at offset %d after %v", offset, resumeDuration)
 		rangeHdr, _ := httphdr.FormatRange([]httphdr.Range{{Start: offset, Length: 0}})

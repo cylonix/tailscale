@@ -93,6 +93,17 @@ type managerOptions struct {
 	// to the function when reception completes.
 	// It is not called if nil.
 	SendFileNotify func()
+
+	// __BEGIN_CYLONIX_ADD__
+	// CylonixDirectReceiveNotify is fired exactly once per successfully
+	// received file when the manager is in DirectFileMode. It carries
+	// the basename, the final on-disk path the file was written to, and
+	// the per-transfer ID forwarded by the sender (empty when the send
+	// did not come from a cylonix peer-message). Hosts use this to drive
+	// "file received" desktop notifications in direct mode, where the
+	// staging-mode WaitingFiles flow does not apply.
+	CylonixDirectReceiveNotify func(baseName, finalPath, transferID string)
+	// __END_CYLONIX_ADD__
 }
 
 // manager manages the state for receiving and managing taildropped files.

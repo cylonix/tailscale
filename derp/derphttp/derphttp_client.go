@@ -443,7 +443,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if dl, ok := ctx.Deadline(); ok {
 			remaining = time.Until(dl).String()
 		}
-		c.logf("derphttp: xray: dial complete, proceeding to HTTP upgrade (ctx deadline remaining: %s)", remaining)
+		c.logf("[v2] derphttp: xray: dial complete, proceeding to HTTP upgrade (ctx deadline remaining: %s)", remaining)
 	}
 	// __END_CYLONIX_ADD__
 
@@ -536,7 +536,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	}
 
 	if isXRay {
-		c.logf("derphttp: xray: sending HTTP upgrade request to %s", urlStr)
+		c.logf("[v2] derphttp: xray: sending HTTP upgrade request to %s", urlStr)
 	}
 
 	if !serverPub.IsZero() && serverProtoVersion != 0 {
@@ -570,7 +570,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			return nil, 0, err
 		}
 		if isXRay {
-			c.logf("derphttp: xray: flushing HTTP request")
+			c.logf("[v2] derphttp: xray: flushing HTTP request")
 		}
 		if err := brw.Flush(); err != nil {
 			if isXRay {
@@ -583,7 +583,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		}
 
 		if isXRay {
-			c.logf("derphttp: xray: reading HTTP response")
+			c.logf("[v2] derphttp: xray: reading HTTP response")
 		}
 		resp, err := http.ReadResponse(brw.Reader, req)
 		if err != nil {
@@ -599,7 +599,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			return nil, 0, err
 		}
 		if isXRay {
-			c.logf("derphttp: xray: HTTP response status=%d", resp.StatusCode)
+			c.logf("[v2] derphttp: xray: HTTP response status=%d", resp.StatusCode)
 		}
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			b, _ := io.ReadAll(resp.Body)
@@ -608,7 +608,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		}
 	}
 	if isXRay {
-		c.logf("derphttp: xray: starting DERP client handshake (recvServerKey + sendClientKey)")
+		c.logf("[v2] derphttp: xray: starting DERP client handshake (recvServerKey + sendClientKey)")
 	}
 	derpClient, err = derp.NewClient(c.privateKey, httpConn, brw, c.logf,
 		derp.MeshKey(c.MeshKey),
@@ -623,7 +623,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		return nil, 0, err
 	}
 	if isXRay {
-		c.logf("derphttp: xray: DERP client handshake complete")
+		c.logf("[v2] derphttp: xray: DERP client handshake complete")
 	}
 	if c.preferred {
 		if err := derpClient.NotePreferred(true); err != nil {
@@ -809,6 +809,7 @@ func (c *Client) DialRegionConn(ctx context.Context, reg *tailcfg.DERPRegion) (c
 		return nil, nil, false, ctx.Err()
 	}
 }
+
 // __END_CYLONIX_ADD__
 
 func (c *Client) dialContext(ctx context.Context, proto, addr string) (net.Conn, error) {
@@ -989,7 +990,7 @@ func (c *Client) dialNodeUsingProxy(ctx context.Context, n *tailcfg.DERPNode, pr
 	if buildfeatures.HasUseProxy {
 		if getAuthHeader, ok := feature.HookProxyGetAuthHeader.GetOk(); ok {
 			if v, err := getAuthHeader(pu); err != nil {
-				c.logf("derphttp: error getting proxy auth header for %v: %v", proxyURL, err)
+				c.logf("[v2] derphttp: error getting proxy auth header for %v: %v", proxyURL, err)
 			} else if v != "" {
 				authHeader = fmt.Sprintf("Proxy-Authorization: %s\r\n", v)
 			}
@@ -1012,7 +1013,7 @@ func (c *Client) dialNodeUsingProxy(ctx context.Context, n *tailcfg.DERPNode, pr
 		c.logf("derphttp: CONNECT dial to %s: %v", target, err)
 		return nil, err
 	}
-	c.logf("derphttp: CONNECT dial to %s: %v", target, res.Status)
+	c.logf("[v2] derphttp: CONNECT dial to %s: %v", target, res.Status)
 	if res.StatusCode != 200 {
 		return nil, fmt.Errorf("invalid response status from HTTP proxy %s on CONNECT to %s: %v", pu, target, res.Status)
 	}
