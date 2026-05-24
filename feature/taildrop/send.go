@@ -70,7 +70,12 @@ func (f *incomingFile) Write(p []byte) (n int, err error) {
 // specific partial file. This allows the client to determine whether to resume
 // a partial file. While resuming, PutFile may be called again with a non-zero
 // offset to specify where to resume receiving data at.
-func (m *manager) PutFile(id clientID, baseName string, r io.Reader, offset, length int64) (fileLength int64, err error) {
+// PutFile receives a single Taildrop transfer. The cylonixTransferID
+// argument is the peer-messaging correlation token (empty for plain
+// Taildrop sends); see peerapi.go's X-Cylonix-Transfer-ID handling.
+//
+// __CYLONIX_MOD__ — added cylonixTransferID parameter.
+func (m *manager) PutFile(id clientID, baseName string, r io.Reader, offset, length int64, cylonixTransferID string) (fileLength int64, err error) {
 
 	switch {
 	case m == nil || m.opts.fileOps == nil:
@@ -165,10 +170,14 @@ func (m *manager) PutFile(id clientID, baseName string, r io.Reader, offset, len
 	// In direct mode the staging-based FilesWaiting / WaitingFiles flow
 	// does not surface arrivals (manager.WaitingFiles returns nil), so
 	// fire a one-shot completion event so hosts can drive a desktop
-	// notification from the same code path that the staging-mode
-	// handleFilesWaiting uses.
-	if m.opts.DirectFileMode && m.opts.CylonixDirectReceiveNotify != nil {
-		m.opts.CylonixDirectReceiveNotify(baseName, finalPath, m.WaitingFileTransferID(baseName))
+	// notification. The transferID is passed in directly — no sidecar
+	// is needed because the receiver UI gets it inline via the notify
+	// event. (Staging mode still writes a sidecar via peerapi.go so
+	// WaitingFiles can surface the ID; that path is unchanged.)
+	if m.opts.DirectFileMode {
+		if m.opts.CylonixDirectReceiveNotify != nil {
+			m.opts.CylonixDirectReceiveNotify(baseName, finalPath, cylonixTransferID)
+		}
 	}
 	// __END_CYLONIX_ADD__
 	return fileLength, nil

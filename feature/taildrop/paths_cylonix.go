@@ -20,11 +20,12 @@ import (
 // Taildrop.
 const cylonixDownloadsSubfolder = "Cylonix"
 
-// cylonixDownloadsEnvVar opts the daemon into using the Downloads-based
-// default direct file root. The cylonix daemon launchers (LaunchDaemon
-// plist on macOS, systemd unit on Linux, service config on Windows)
-// set this so users get the friendlier UX, while vanilla tailscaled
-// (and the upstream tests) keep the legacy staging behavior.
+// cylonixDownloadsEnvVar opts the binary into the Downloads-based
+// direct file root. Cylonix-branded launchers (LaunchDaemon plist on
+// macOS, systemd unit on Linux, service config on Windows) set this so
+// users get the friendlier UX. Vanilla tailscaled (and upstream tests
+// that don't want files dropped into the runner's real Downloads
+// folder) keep the legacy staging behavior by leaving it unset.
 const cylonixDownloadsEnvVar = "CYLONIX_TAILDROP_DEFAULT_DOWNLOADS"
 
 // cylonixDefaultDownloadsRoot returns a per-user "Downloads/Cylonix"
@@ -32,18 +33,19 @@ const cylonixDownloadsEnvVar = "CYLONIX_TAILDROP_DEFAULT_DOWNLOADS"
 // or "" if the env var opt-in is not set or no such directory can be
 // safely determined for the current install. Selection order:
 //
-//  1. If prefs.OperatorUser is set and resolves to a real Unix user with
-//     a home directory containing a Downloads folder, use that user's
+//  1. If prefs.OperatorUser is set and resolves to a real user with a
+//     home directory containing a Downloads folder, use that user's
 //     Downloads/Cylonix.
 //  2. Otherwise, if the daemon is running unprivileged (non-root on
 //     Unix), use the current process user's Downloads/Cylonix.
-//  3. Otherwise return "" so the caller falls back to the legacy
-//     daemon-staged directory under varRoot.
+//  3. Otherwise (privileged daemon, no operator pref), try to resolve
+//     the currently active GUI/console user and use their
+//     Downloads/Cylonix. Best-effort; returns "" if no such user can
+//     be determined.
 //
 // The returned directory is created if missing. When the daemon is
 // running as root and we created the folder on behalf of a different
-// (operator) user, we chown it so the operator can read what lands in
-// it.
+// user, we chown it so that user can read what lands in it.
 func cylonixDefaultDownloadsRoot(prefs ipn.PrefsView) string {
 	if os.Getenv(cylonixDownloadsEnvVar) != "1" {
 		return ""
@@ -58,6 +60,16 @@ func cylonixDefaultDownloadsRoot(prefs ipn.PrefsView) string {
 			if path := cylonixEnsureDownloadsCylonix(home, -1, -1); path != "" {
 				return path
 			}
+		}
+		return ""
+	}
+	// Privileged daemon with no operator pref: best-effort resolve the
+	// active GUI user. On a single-user desktop this is unambiguous; on
+	// shared systems the admin can still pin a specific user via
+	// `tailscale set --operator <user>`.
+	if home, uid, gid := cylonixActiveUserHome(); home != "" {
+		if path := cylonixEnsureDownloadsCylonix(home, uid, gid); path != "" {
+			return path
 		}
 	}
 	return ""
@@ -74,7 +86,14 @@ func cylonixOperatorHome(prefs ipn.PrefsView) (home string, uid, gid int) {
 	if op == "" {
 		return "", -1, -1
 	}
-	u, err := user.Lookup(op)
+	return cylonixLookupUser(op)
+}
+
+// cylonixLookupUser resolves a username to its home directory and
+// numeric uid/gid. Returns "" / -1 / -1 on failure or when uid/gid
+// cannot be parsed as integers (e.g. on Windows).
+func cylonixLookupUser(name string) (home string, uid, gid int) {
+	u, err := user.Lookup(name)
 	if err != nil {
 		return "", -1, -1
 	}
@@ -126,7 +145,7 @@ func cylonixEnsureDownloadsCylonix(home string, uid, gid int) string {
 // cylonixIsPrivilegedProcess reports whether the current process is
 // running as a privileged system identity (root on Unix; a service
 // account on Windows). Privileged daemons cannot meaningfully default
-// to "the user's Downloads" because they have no single user.
+// to "the user's Downloads" without first resolving which user.
 func cylonixIsPrivilegedProcess() bool {
 	if runtime.GOOS == "windows" {
 		// On Windows, treat the absence of USERPROFILE as a strong
@@ -135,4 +154,96 @@ func cylonixIsPrivilegedProcess() bool {
 		return os.Getenv("USERPROFILE") == ""
 	}
 	return os.Geteuid() == 0
+}
+
+// cylonixActiveUserHome returns the home dir + uid/gid of the currently
+// active GUI/console user, or "" / -1 / -1 if none can be determined.
+// Used as a fallback when running as a privileged daemon with no
+// operator pref configured.
+//
+// Resolution is OS-specific:
+//
+//   - macOS: stat /dev/console — its owner is the user logged in at
+//     the loginwindow (or the fast-user-switching-active user).
+//   - Linux: walk /run/user/<uid> entries; if exactly one regular
+//     user (uid >= 1000) has a runtime dir, use that one. The XDG
+//     runtime dir is created by systemd-logind for active sessions.
+//   - Windows: not implemented; returns "". Admins should configure
+//     the operator user via `tailscale set --operator`.
+func cylonixActiveUserHome() (home string, uid, gid int) {
+	switch runtime.GOOS {
+	case "darwin":
+		return cylonixDarwinConsoleUser()
+	case "linux":
+		return cylonixLinuxActiveUser()
+	default:
+		return "", -1, -1
+	}
+}
+
+func cylonixDarwinConsoleUser() (home string, uid, gid int) {
+	fi, err := os.Stat("/dev/console")
+	if err != nil {
+		return "", -1, -1
+	}
+	sysUID, ok := cylonixStatUID(fi)
+	if !ok {
+		return "", -1, -1
+	}
+	u, err := user.LookupId(strconv.FormatUint(uint64(sysUID), 10))
+	if err != nil {
+		return "", -1, -1
+	}
+	parsedUID, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		parsedUID = -1
+	}
+	parsedGID, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		parsedGID = -1
+	}
+	// Skip system accounts (uid < 500 on macOS).
+	if parsedUID >= 0 && parsedUID < 500 {
+		return "", -1, -1
+	}
+	return u.HomeDir, parsedUID, parsedGID
+}
+
+func cylonixLinuxActiveUser() (home string, uid, gid int) {
+	entries, err := os.ReadDir("/run/user")
+	if err != nil {
+		return "", -1, -1
+	}
+	var picked *user.User
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		n, err := strconv.Atoi(e.Name())
+		if err != nil || n < 1000 {
+			continue
+		}
+		u, err := user.LookupId(e.Name())
+		if err != nil {
+			continue
+		}
+		if picked != nil {
+			// Ambiguous (multiple active users) — defer to explicit
+			// OperatorUser pref instead of guessing.
+			return "", -1, -1
+		}
+		picked = u
+	}
+	if picked == nil {
+		return "", -1, -1
+	}
+	parsedUID, err := strconv.Atoi(picked.Uid)
+	if err != nil {
+		parsedUID = -1
+	}
+	parsedGID, err := strconv.Atoi(picked.Gid)
+	if err != nil {
+		parsedGID = -1
+	}
+	return picked.HomeDir, parsedUID, parsedGID
 }

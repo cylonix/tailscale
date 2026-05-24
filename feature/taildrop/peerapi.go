@@ -138,23 +138,25 @@ func handlePeerPutWithBackend(h ipnlocal.PeerAPIHandler, ext extensionForPut, w 
 			}
 			offset = ranges[0].Start
 		}
-		n, err := taildropMgr.PutFile(clientID(fmt.Sprint(id)), baseName, r.Body, offset, r.ContentLength)
+		// __BEGIN_CYLONIX_MOD__
+		// Cylonix peer-message correlation: the sender (localapi.go's
+		// singleFilePut) attaches the transfer ID as a header. In direct
+		// file mode it's threaded through PutFile to the finalize-time
+		// CylonixDirectFileReceived notify; in staging mode it lands as
+		// a sidecar so WaitingFiles can surface it via the WaitingFile.ID
+		// field (consumed by lib/services/peer_messaging_service).
+		cylonixTransferID := r.Header.Get("X-Cylonix-Transfer-ID")
+		n, err := taildropMgr.PutFile(clientID(fmt.Sprint(id)), baseName, r.Body, offset, r.ContentLength, cylonixTransferID)
 		switch err {
 		case nil:
 			d := ext.Clock().Since(t0).Round(time.Second / 10)
 			h.Logf("got put of %s in %v from %v/%v", approxSize(n), d, h.RemoteAddr().Addr(), h.Peer().ComputedName)
-			// __BEGIN_CYLONIX_ADD__
-			// Persist the cylonix peer-message transfer ID supplied by the
-			// sender as a sidecar so the receiver UI can correlate this file
-			// with the corresponding peer message attachment. The transfer
-			// ID is set on the manifest by lib/services/peer_messaging_service
-			// and forwarded by localapi.go's singleFilePut.
-			if transferID := r.Header.Get("X-Cylonix-Transfer-ID"); transferID != "" {
-				if setErr := taildropMgr.SetWaitingFileTransferID(baseName, transferID); setErr != nil {
+			if cylonixTransferID != "" && !taildropMgr.opts.DirectFileMode {
+				if setErr := taildropMgr.SetWaitingFileTransferID(baseName, cylonixTransferID); setErr != nil {
 					h.Logf("taildrop: SetWaitingFileTransferID(%q) failed: %v", baseName, setErr)
 				}
 			}
-			// __END_CYLONIX_ADD__
+			// __END_CYLONIX_MOD__
 			io.WriteString(w, "{}\n")
 		case ErrNoTaildrop:
 			http.Error(w, err.Error(), http.StatusForbidden)

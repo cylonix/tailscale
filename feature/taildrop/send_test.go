@@ -37,7 +37,7 @@ func TestPutFile(t *testing.T) {
 			}.New()
 
 			id := clientID("0")
-			n, err := mgr.PutFile(id, "file.txt", strings.NewReader(content), 0, int64(len(content)))
+			n, err := mgr.PutFile(id, "file.txt", strings.NewReader(content), 0, int64(len(content)), "")
 			if err != nil {
 				t.Fatalf("PutFile error: %v", err)
 			}

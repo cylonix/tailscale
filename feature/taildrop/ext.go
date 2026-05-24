@@ -83,6 +83,13 @@ type Extension struct {
 	// DirectFileMode. Used to drive desktop notifications when files
 	// land directly in the user's Downloads folder.
 	cylonixDirectReceiveHook func(baseName, finalPath, transferID string)
+
+	// cylonixLastFileRoot / cylonixLastDirect cache the last (root,
+	// isDirect) chosen by fileRoot() so that onChangeProfile can detect
+	// a relevant prefs change (e.g. OperatorUser arriving after the
+	// daemon started) and rebuild the manager instead of early-returning.
+	cylonixLastFileRoot string
+	cylonixLastDirect   bool
 	// __END_CYLONIX_ADD__
 
 	nodeBackendForTest ipnext.NodeBackend // if non-nil, pretend we're this node state for tests
@@ -154,34 +161,58 @@ func (e *Extension) onChangeProfile(profile ipn.LoginProfileView, prefs ipn.Pref
 	if uid == 0 {
 		e.setMgrLocked(nil)
 		e.outgoingFiles = nil
+		e.cylonixLastFileRoot = ""
+		e.cylonixLastDirect = false
 		return
 	}
 
-	if sameNode && e.manager() != nil {
-		return
-	}
-
+	// __BEGIN_CYLONIX_MOD__
 	// Use the provided [FileOps] implementation (typically for SAF access on Android),
 	// or create an [fsFileOps] instance rooted at fileRoot.
 	//
 	// A non-nil [FileOps] also implies that we are in DirectFileMode.
 	fops := e.fileOps
 	isDirectFileMode := fops != nil
+	var fileRoot string
 	if fops == nil {
-		var fileRoot string
-		if fileRoot, isDirectFileMode = e.fileRoot(uid, activeLogin, prefs); fileRoot == "" { // __CYLONIX_MOD__ pass prefs
+		if fileRoot, isDirectFileMode = e.fileRoot(uid, activeLogin, prefs); fileRoot == "" {
 			e.logf("no Taildrop directory configured")
 			e.setMgrLocked(nil)
+			e.cylonixLastFileRoot = ""
+			e.cylonixLastDirect = false
 			return
 		}
+	}
 
+	// Upstream early-returns whenever sameNode && manager exists. Cylonix
+	// extends that: also rebuild when the resolved fileRoot or DirectFile
+	// mode flipped, since OperatorUser (and our active-user fallback) can
+	// resolve to a Downloads/Cylonix path only after the daemon has been
+	// running for a moment, and we want that to take effect without
+	// requiring a daemon restart.
+	if sameNode && e.manager() != nil &&
+		fileRoot == e.cylonixLastFileRoot &&
+		isDirectFileMode == e.cylonixLastDirect {
+		return
+	}
+
+	if fops == nil {
 		var err error
 		if fops, err = newFileOps(fileRoot); err != nil {
 			e.logf("taildrop: cannot create FileOps: %v", err)
 			e.setMgrLocked(nil)
+			e.cylonixLastFileRoot = ""
+			e.cylonixLastDirect = false
 			return
 		}
 	}
+
+	e.cylonixLastFileRoot = fileRoot
+	e.cylonixLastDirect = isDirectFileMode
+	if fileRoot != "" {
+		e.logf("taildrop: using fileRoot=%q directMode=%v", fileRoot, isDirectFileMode)
+	}
+	// __END_CYLONIX_MOD__
 
 	e.setMgrLocked(managerOptions{
 		Logf:           e.logf,
