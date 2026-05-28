@@ -97,12 +97,14 @@ type managerOptions struct {
 	// __BEGIN_CYLONIX_ADD__
 	// CylonixDirectReceiveNotify is fired exactly once per successfully
 	// received file when the manager is in DirectFileMode. It carries
-	// the basename, the final on-disk path the file was written to, and
-	// the per-transfer ID forwarded by the sender (empty when the send
-	// did not come from a cylonix peer-message). Hosts use this to drive
+	// the basename, the final on-disk path the file was written to, the
+	// number of bytes written (so hosts don't need to stat the path,
+	// which may be a content:// URI on Android MediaStore), and the
+	// per-transfer ID forwarded by the sender (empty when the send did
+	// not come from a cylonix peer-message). Hosts use this to drive
 	// "file received" desktop notifications in direct mode, where the
 	// staging-mode WaitingFiles flow does not apply.
-	CylonixDirectReceiveNotify func(baseName, finalPath, transferID string)
+	CylonixDirectReceiveNotify func(baseName, finalPath string, size int64, transferID string)
 	// __END_CYLONIX_ADD__
 }
 

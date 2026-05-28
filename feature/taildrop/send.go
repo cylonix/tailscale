@@ -176,7 +176,7 @@ func (m *manager) PutFile(id clientID, baseName string, r io.Reader, offset, len
 	// WaitingFiles can surface the ID; that path is unchanged.)
 	if m.opts.DirectFileMode {
 		if m.opts.CylonixDirectReceiveNotify != nil {
-			m.opts.CylonixDirectReceiveNotify(baseName, finalPath, cylonixTransferID)
+			m.opts.CylonixDirectReceiveNotify(baseName, finalPath, fileLength, cylonixTransferID)
 		}
 	}
 	// __END_CYLONIX_ADD__

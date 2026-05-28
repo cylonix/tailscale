@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -239,14 +238,10 @@ func (e *Extension) SetCylonixDirectReceiveHook(cb func(baseName, finalPath, tra
 	e.cylonixDirectReceiveHook = cb
 }
 
-func (e *Extension) cylonixDirectReceiveNotify(baseName, finalPath, transferID string) {
+func (e *Extension) cylonixDirectReceiveNotify(baseName, finalPath string, size int64, transferID string) {
 	// Surface the event on the watch-ipn-bus too so dart clients can
 	// correlate peer-message attachments without polling WaitingFiles
 	// (which returns nil in direct mode).
-	var size int64
-	if fi, err := os.Stat(finalPath); err == nil {
-		size = fi.Size()
-	}
 	if e.host != nil {
 		e.host.SendNotifyAsync(ipn.Notify{
 			CylonixDirectFileReceived: &CylonixDirectFile{
