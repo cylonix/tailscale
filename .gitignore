@@ -65,3 +65,4 @@ client/web/.env.local
 derpbench
 derper-linux-amd64
 tailscaled
+/tailscale
