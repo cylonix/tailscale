@@ -41,6 +41,7 @@ func init() {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("mkdir %q: %w", dir, err)
 		}
+		cylonixInheritParentOwner(dir) // __CYLONIX_ADD__ keep root-created dir readable by the GUI user
 		return fsFileOps{rootDir: dir}, nil
 	}
 }
@@ -53,10 +54,12 @@ func (f fsFileOps) OpenWriter(name string, offset int64, perm os.FileMode) (io.W
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, "", err
 	}
+	cylonixInheritParentOwner(filepath.Dir(path)) // __CYLONIX_ADD__ self-heal owner if dir was recreated under root
 	fi, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, perm)
 	if err != nil {
 		return nil, "", err
 	}
+	cylonixInheritParentOwner(path) // __CYLONIX_ADD__ keep the partial file readable by the GUI user (carried through Rename)
 	if offset != 0 {
 		curr, err := fi.Seek(0, io.SeekEnd)
 		if err != nil {
@@ -101,6 +104,7 @@ func (f fsFileOps) Rename(oldPath, newName string) (newPath string, err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return "", err
 	}
+	cylonixInheritParentOwner(filepath.Dir(dst)) // __CYLONIX_ADD__ self-heal owner if dir was recreated under root
 
 	st, err := os.Stat(oldPath)
 	if err != nil {
@@ -121,6 +125,7 @@ func (f fsFileOps) Rename(oldPath, newName string) (newPath string, err error) {
 			if err != nil {
 				return "", err
 			}
+			cylonixInheritParentOwner(dst) // __CYLONIX_ADD__ keep the finalized file readable by the GUI user
 			return dst, nil
 		}
 		if statErr != nil {

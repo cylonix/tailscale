@@ -142,6 +142,38 @@ func cylonixEnsureDownloadsCylonix(home string, uid, gid int) string {
 	return target
 }
 
+// cylonixInheritParentOwner best-effort hands ownership of path to the user
+// that owns its parent directory, but only when the daemon is running as a
+// privileged (root) process.
+//
+// Taildrop's direct file root lives under the GUI user's Downloads folder, but
+// a root daemon creates files and directories owned by root:wheel that the
+// user cannot read or traverse. cylonixEnsureDownloadsCylonix already chowns
+// the Downloads/Cylonix folder, but only on its first creation. If the user
+// deletes that folder, the per-file write path in fsFileOps recreates it (and
+// writes files into it) as root without any chown, leaving an inaccessible
+// directory. Calling this from the fsFileOps create/rename paths makes every
+// directory and file inherit the parent's owner, which self-heals the folder
+// on the next received file.
+//
+// It is a no-op on non-root daemons (the files are already user-owned) and on
+// platforms without numeric uid/gid.
+func cylonixInheritParentOwner(path string) {
+	if !cylonixIsPrivilegedProcess() {
+		return
+	}
+	fi, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return
+	}
+	uid, gid, ok := cylonixStatOwnerIDs(fi)
+	if !ok {
+		return
+	}
+	// Best-effort: ignore errors (e.g. macOS TCC restrictions on Downloads).
+	_ = os.Chown(path, int(uid), int(gid))
+}
+
 // cylonixIsPrivilegedProcess reports whether the current process is
 // running as a privileged system identity (root on Unix; a service
 // account on Windows). Privileged daemons cannot meaningfully default
