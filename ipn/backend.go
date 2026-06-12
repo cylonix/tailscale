@@ -255,6 +255,15 @@ type OutgoingFile struct {
 	Sent         int64                // bytes copied thus far
 	Finished     bool                 // indicates whether or not the transfer finished
 	Succeeded    bool                 // for a finished transfer, indicates whether or not it was successful
+	// __BEGIN_CYLONIX_ADD__
+	// CylonixPeerMessage marks this transfer as a cylonix peer-message
+	// attachment. Only when set is ID forwarded to the receiver as the
+	// X-Cylonix-Transfer-ID header so the file is treated as a chat
+	// attachment rather than a plain Taildrop; plain sends (share view,
+	// share extension) also carry a manifest ID for progress tracking,
+	// which must not be mistaken for an attachment transfer ID.
+	CylonixPeerMessage bool `json:",omitempty"`
+	// __END_CYLONIX_ADD__
 }
 
 // StateKey is an opaque identifier for a set of LocalBackend state

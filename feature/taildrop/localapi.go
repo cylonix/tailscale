@@ -230,11 +230,21 @@ func multiFilePost(h *localapi.Handler, progressUpdates chan (ipn.OutgoingFile),
 		ww.reset()
 		// __END_CYLONIX_MOD__
 		of := outgoingFilesByName[part.FileName()]
-		// __CYLONIX_MOD__ forward of.ID as the cylonix peer-message
-		// transfer ID since manifest IDs are dart-supplied.
-		if !singleFilePut(h, r.Context(), progressUpdates, ww, part, dstURL, of, of.ID) {
+		// __BEGIN_CYLONIX_MOD__
+		// Forward of.ID as the cylonix peer-message transfer ID only when
+		// the manifest entry is flagged as a peer-message attachment.
+		// Plain sends (share view, share extension) also populate dart-
+		// supplied manifest IDs for progress tracking; leaking those as
+		// transfer IDs would make the receiver treat regular Taildrop
+		// arrivals as chat attachments.
+		cylonixTransferID := ""
+		if of.CylonixPeerMessage {
+			cylonixTransferID = of.ID
+		}
+		if !singleFilePut(h, r.Context(), progressUpdates, ww, part, dstURL, of, cylonixTransferID) {
 			return
 		}
+		// __END_CYLONIX_MOD__
 
 		if ww.statusCode >= 400 {
 			// put failed, stop immediately
