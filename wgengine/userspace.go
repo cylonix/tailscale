@@ -1390,6 +1390,16 @@ func (e *userspaceEngine) Done() <-chan struct{} {
 func (e *userspaceEngine) linkChange(delta *netmon.ChangeDelta) {
 
 	up := delta.AnyInterfaceUp()
+	// __BEGIN_CYLONIX_ADD__
+	// Confirm the engine actually received the change and shows how it will be
+	// handled (major => Rebind + DNS reconfigure; minor => no rebind). Pair with
+	// the "netmon change trace" log: if that shows major but this is missing,
+	// delivery to the engine is broken; if both show minor on a Wi-Fi->cell
+	// handoff, the default-interface nomination is still wrong.
+	e.logf("linkChange trace: up=%v rebindLikelyRequired=%v defIfViable=%v defIfChanged=%v defIf=%q ifIPsChanged=%v",
+		up, delta.RebindLikelyRequired, delta.DefaultInterfaceMaybeViable,
+		delta.DefaultInterfaceChanged, delta.DefaultRouteInterface, delta.InterfaceIPsChanged)
+	// __END_CYLONIX_ADD__
 	if !up {
 		e.logf("LinkChange: all links down; pausing: %v", delta.StateDesc())
 	} else if delta.RebindLikelyRequired {
