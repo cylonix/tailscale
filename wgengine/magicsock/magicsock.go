@@ -1684,6 +1684,16 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 	// epCache caches an epAddr->endpoint for hot flows.
 	var epCache epAddrEndpointCache
 
+	// __BEGIN_CYLONIX_ADD__
+	// healthName and lastReadErrLog support keeping the receive goroutine alive
+	// across transient socket errors (see the read loop below).
+	healthName := "receive"
+	if healthItem != nil {
+		healthName = healthItem.Name()
+	}
+	var lastReadErrLog time.Time
+	// __END_CYLONIX_ADD__
+
 	return func(buffs [][]byte, sizes []int, eps []conn.Endpoint) (_ int, retErr error) {
 		if buildfeatures.HasHealth && healthItem != nil {
 			healthItem.Enter()
@@ -1706,7 +1716,39 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 				if neterror.PacketWasTruncated(err) {
 					continue
 				}
-				return 0, err
+				// __BEGIN_CYLONIX_MOD__
+				// Keep the receive goroutine alive across transient socket
+				// errors. On mobile — notably the iOS network extension — the
+				// bound UDP socket can return a non-temporary error such as
+				// ENETDOWN/EADDRNOTAVAIL during a Wi-Fi<->cellular handoff.
+				// Upstream wireguard-go's RoutineReceiveIncoming treats such an
+				// error as fatal and exits the goroutine; on the Cylonix backend
+				// nothing respawns it (Rebind only swaps the socket underneath
+				// RebindingUDPConn, and the LocalBackend is never torn down on a
+				// path change), so e.g. ReceiveIPv4 stays "not running" and all
+				// inbound traffic is lost until the tunnel is toggled.
+				//
+				// net.ErrClosed retains its upstream meaning (the conn is
+				// closing/shutting down) and is propagated so the goroutine exits
+				// cleanly; a normal Rebind's socket close is already absorbed by
+				// RebindingUDPConn and never reaches here. For any other error we
+				// back off and retry, so the next Rebind's fresh socket is picked
+				// up by ruc.ReadBatch. inCall stays true throughout, so the health
+				// tracker keeps reporting the func as running.
+				if c.closing.Load() || errors.Is(err, net.ErrClosed) {
+					return 0, err
+				}
+				if now := time.Now(); now.Sub(lastReadErrLog) > 5*time.Second {
+					lastReadErrLog = now
+					c.logf("magicsock: %s read error; awaiting rebind: %v", healthName, err)
+				}
+				select {
+				case <-c.donec:
+					return 0, err
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+				// __END_CYLONIX_MOD__
 			}
 
 			reportToCaller := false

@@ -580,6 +580,28 @@ func (m *Monitor) handlePotentialChange(newState *State, forceCallbacks bool) {
 		return
 	}
 
+	// __BEGIN_CYLONIX_ADD__
+	// Always-on trace of how each network change is classified. A weak-Wi-Fi
+	// <-> cellular handoff must classify as major (RebindLikelyRequired) to
+	// drive the Rebind + DNS reconfigure recovery; a handoff that stays minor
+	// (e.g. because the nominated default interface didn't change or isn't
+	// viable) is the bug signature. Logged at default level so it shows up in
+	// field logs without [v1] verbose logging.
+	m.logf("netmon change trace: rebindLikelyRequired=%v defIfViable=%v defIfChanged=%v defIf=%q ifIPsChanged=%v protoChanged=%v lessExpensive=%v pacChanged=%v timeJumped=%v initial=%v forced=%v",
+		delta.RebindLikelyRequired,
+		delta.DefaultInterfaceMaybeViable,
+		delta.DefaultInterfaceChanged,
+		delta.DefaultRouteInterface,
+		delta.InterfaceIPsChanged,
+		delta.AvailableProtocolsChanged,
+		delta.IsLessExpensive,
+		delta.HasPACOrProxyConfigChanged,
+		delta.TimeJumped,
+		delta.IsInitialState,
+		forceCallbacks,
+	)
+	// __END_CYLONIX_ADD__
+
 	if delta.RebindLikelyRequired {
 		m.gwValid = false
 	}
