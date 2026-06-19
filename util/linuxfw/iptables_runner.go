@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/coreos/go-iptables/iptables"
 	"tailscale.com/envknob/featureknob"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
