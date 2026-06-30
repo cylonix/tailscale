@@ -180,10 +180,11 @@ func cylonixInheritParentOwner(path string) {
 // to "the user's Downloads" without first resolving which user.
 func cylonixIsPrivilegedProcess() bool {
 	if runtime.GOOS == "windows" {
-		// On Windows, treat the absence of USERPROFILE as a strong
-		// signal that we're running as LocalSystem or another
-		// non-interactive service identity.
-		return os.Getenv("USERPROFILE") == ""
+		// USERPROFILE is set even for LocalSystem (it points at the
+		// system profile), so it cannot distinguish a service from an
+		// interactive user. Inspect the process token's user SID
+		// instead. See paths_cylonix_windows.go.
+		return cylonixWindowsIsPrivileged()
 	}
 	return os.Geteuid() == 0
 }
@@ -200,14 +201,17 @@ func cylonixIsPrivilegedProcess() bool {
 //   - Linux: walk /run/user/<uid> entries; if exactly one regular
 //     user (uid >= 1000) has a runtime dir, use that one. The XDG
 //     runtime dir is created by systemd-logind for active sessions.
-//   - Windows: not implemented; returns "". Admins should configure
-//     the operator user via `tailscale set --operator`.
+//   - Windows: resolve the user logged in at the active console session
+//     (WTSGetActiveConsoleSessionId + WTSQueryUserToken) and use that
+//     user's profile/Downloads. See paths_cylonix_windows.go.
 func cylonixActiveUserHome() (home string, uid, gid int) {
 	switch runtime.GOOS {
 	case "darwin":
 		return cylonixDarwinConsoleUser()
 	case "linux":
 		return cylonixLinuxActiveUser()
+	case "windows":
+		return cylonixWindowsActiveUser()
 	default:
 		return "", -1, -1
 	}
