@@ -292,6 +292,15 @@ func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context) error {
 	return nil
 }
 
+// peerMessageProfileID returns the active login profile's ID so emitted
+// PeerMessageEvents can be filed under the right profile on the app side. The
+// app keys peer-message history by profile; without this stamp it falls back
+// to a by-conversation-id lookup that mis-files events under a stale profile
+// after the same account is re-added (new profile, same conversations).
+func (b *LocalBackend) peerMessageProfileID() string {
+	return string(b.CurrentProfile().ID())
+}
+
 func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus string) error {
 	event := PeerMessageEvent{
 		Version:        "v1",
@@ -300,6 +309,7 @@ func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTranspor
 		MessageID:      payload.Message.ID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
 		Payload: map[string]any{
+			"profile_id":      b.peerMessageProfileID(),
 			"conversation_id": payload.ConversationID,
 			"delivery_status": deliveryStatus,
 			"message_id":      payload.Message.ID,
@@ -448,6 +458,7 @@ func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request
 		MessageID:      payload.Message.ID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
 		Payload: map[string]any{
+			"profile_id":         ph.LocalBackend().peerMessageProfileID(),
 			"conversation_title": payload.ConversationTitle,
 			"subtitle":           payload.Subtitle,
 			"from_peer_id":       ph.Peer().StableID(),

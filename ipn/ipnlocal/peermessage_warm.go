@@ -405,8 +405,9 @@ func (b *LocalBackend) emitWarmStatusLocked(ref, status string) {
 		Type:      "warm_status",
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Payload: map[string]any{
-			"peer_ref": ref,
-			"status":   status,
+			"profile_id": b.peerMessageProfileID(),
+			"peer_ref":   ref,
+			"status":     status,
 		},
 	}
 	if PeerMessageEventSink != nil {
