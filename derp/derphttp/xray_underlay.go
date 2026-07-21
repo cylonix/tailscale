@@ -63,6 +63,45 @@ func WantsXRayUnderlay(n *tailcfg.DERPNode) bool {
 	return wantsXRayUnderlay(n)
 }
 
+// xrayConnectTimeout is the fallback setup budget for a DERP connection
+// reached via an xray underlay. Unlike the plain-TLS path (which needs
+// only a TCP + TLS handshake), an xray setup is a serial multi-RTT chain
+// (TCP + REALITY + XHTTP + DERP HTTP upgrade + DERP key exchange). On a
+// weak or throttled underlay that chain legitimately takes much longer,
+// and force-closing it mid-handshake just restarts the same expensive
+// sequence from zero. A patient budget lets a slow-but-advancing setup
+// finish instead of thrashing in a redial loop.
+//
+// The budget is deliberately capped just above the server-side handshake
+// ceiling rather than set arbitrarily high. Measurement (derpbench through
+// a mid-handshake-outage proxy against the real relay) showed the xray
+// server abandons a half-open handshake after ~20s: outages up to ~18s
+// recover, but beyond ~20s the handshake cannot complete regardless of how
+// long the client waits. A budget much larger than that ceiling buys no
+// extra survivability and only delays the redial after a doomed attempt,
+// so 22s tracks the server ceiling with a small margin. Raising it further
+// only helps if the server's handshake timeout is raised in tandem.
+const xrayConnectTimeout = 22 * time.Second
+
+// regionWantsXRayUnderlay reports whether this client's DERP region has
+// any node configured to use the xray underlay. It is safe to call while
+// holding the client's mu (getRegion does not acquire it).
+func (c *Client) regionWantsXRayUnderlay() bool {
+	if c.getRegion == nil {
+		return false
+	}
+	reg := c.getRegion()
+	if reg == nil {
+		return false
+	}
+	for _, n := range reg.Nodes {
+		if wantsXRayUnderlay(n) {
+			return true
+		}
+	}
+	return false
+}
+
 func wantsXRayUnderlay(n *tailcfg.DERPNode) bool {
 	if n == nil || n.XRay == nil {
 		return false

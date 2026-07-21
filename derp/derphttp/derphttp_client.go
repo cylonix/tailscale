@@ -351,8 +351,17 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	// timeout is the fallback maximum time (if ctx doesn't limit
 	// it further) to do all of: DNS + TCP + TLS + HTTP Upgrade +
 	// DERP upgrade.
-	const timeout = 10 * time.Second
+	// __BEGIN_CYLONIX_MOD__
+	// xray underlay regions get a more patient budget: their setup is a
+	// serial multi-RTT chain that legitimately takes longer on a weak or
+	// throttled underlay, and killing it mid-handshake only repeats the
+	// same failure. See xrayConnectTimeout.
+	timeout := 10 * time.Second
+	if c.regionWantsXRayUnderlay() {
+		timeout = xrayConnectTimeout
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// __END_CYLONIX_MOD__
 	go func() {
 		select {
 		case <-ctx.Done():

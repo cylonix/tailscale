@@ -568,50 +568,163 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 	}()
 
 	// __BEGIN_CYLONIX_ADD__
-	// For xray-enabled regions, create additional write-only connections to
-	// fan writes across multiple independent xray TCP tunnels.
+	// For xray-enabled regions, additional write-only connections let us
+	// fan writes across multiple independent xray TCP tunnels for
+	// throughput. We deliberately do NOT open them all up front: on a
+	// cold or weak underlay, opening N REALITY handshakes at once tends
+	// to make them fail together and blackout the whole region, and
+	// retrying just repeats the same failure. Instead the region starts
+	// at a single connection and a background ramp widens toward the
+	// ceiling only while the region is proven healthy (recently received
+	// a frame) and under write demand. A region that goes fully unhealthy
+	// is torn down and rebuilt here at a single connection, so a failure
+	// naturally sheds the extra connections.
 	if c.regionHasXRayUnderlay(regionID) {
-		n := c.xrayConnCountForRegion(regionID)
-		for i := 1; i < n; i++ {
-			ewDC := derphttp.NewRegionClient(c.privateKey, c.logf, c.netMon, func() *tailcfg.DERPRegion {
-				if c.connCtx.Err() != nil {
-					return nil
-				}
-				derpMap := c.derpMapAtomic.Load()
-				if derpMap == nil {
-					return nil
-				}
-				return derpMap.Regions[regionID]
-			})
-			ewDC.HealthTracker = c.health
-			ewDC.SetCanAckPings(true)
-			ewDC.NotePreferred(false) // secondaries are never the home connection
-			ewDC.SetAddressFamilySelector(derpAddrFamSelector{c})
-			ewDC.DNSCache = dnscache.Get()
-
-			ewCh := make(chan derpWriteRequest, derpWriteQueueDepth) // __CYLONIX_MOD__
-			ewLastWrite := new(time.Time)
-			*ewLastWrite = time.Now()
-			ew := &activeDerpWriter{
-				c:         ewDC,
-				writeCh:   ewCh,
-				lastWrite: ewLastWrite,
-			}
-			ad.extraConns = append(ad.extraConns, ew)
-			wg.Add(2) // reader + writer goroutines
-			go c.runDerpReader(ctx, regionID, ewDC, wg, startGate)
-			go c.runDerpWriter(ctx, ewDC, ewCh, wg, startGate)
+		if ceiling := c.xrayConnCountForRegion(regionID); ceiling > 1 {
+			go c.runXRayConnRamp(ctx, regionID, ceiling, ad.createTime)
 		}
-		if len(ad.extraConns) > 0 {
-			ad.writeIdx = new(atomic.Uint32)
-		}
-		c.activeDerp[regionID] = ad // store back with updated extraConns/writeIdx
-		c.logf("magicsock: derp-%d: created %d extra xray write connections", regionID, len(ad.extraConns))
 	}
 	// __END_CYLONIX_ADD__
 
 	return ad.writeCh
 }
+
+// __BEGIN_CYLONIX_ADD__
+
+const (
+	// xrayRampInterval is how often the ramp re-evaluates whether to add
+	// another xray connection.
+	xrayRampInterval = 15 * time.Second
+	// xrayRampHealthyWindow is how recently the region must have received
+	// a frame to count as healthy enough to widen. A live DERP connection
+	// receives server keepalives well within this window, so a staler
+	// receive time means the single connection is struggling and we must
+	// not pile more handshakes onto a weak underlay.
+	xrayRampHealthyWindow = 25 * time.Second
+	// xrayRampDemandWindow is how recently a write must have occurred for
+	// the region to be considered actively carrying traffic worth the
+	// extra connection. Idle regions (e.g. home keep-alive only) stay at a
+	// single connection.
+	xrayRampDemandWindow = 30 * time.Second
+)
+
+// runXRayConnRamp gradually grows the number of parallel xray write
+// connections for regionID from one up to ceiling, adding at most one per
+// interval and only while the region is healthy and under write demand.
+// It exits when ctx is cancelled (region teardown, after which the region
+// is rebuilt at a single connection) or when the ceiling is reached. gen
+// identifies the region generation this ramp belongs to, so a stale ramp
+// can never mutate a newer generation's connection set.
+func (c *Conn) runXRayConnRamp(ctx context.Context, regionID, ceiling int, gen time.Time) {
+	ticker := time.NewTicker(xrayRampInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !c.maybeAddXRayConn(ctx, regionID, ceiling, gen) {
+			return
+		}
+	}
+}
+
+// maybeAddXRayConn adds one xray write connection to regionID if the
+// region is healthy, under write demand, below the ceiling, and still the
+// generation identified by gen. It returns false when the ramp should stop
+// entirely (ceiling reached, or the generation is gone), and true when the
+// ramp should keep evaluating on later ticks (including ticks where nothing
+// was added because the region was not yet healthy or was idle).
+func (c *Conn) maybeAddXRayConn(ctx context.Context, regionID, ceiling int, gen time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	ad, ok := c.activeDerp[regionID]
+	if !ok || !ad.createTime.Equal(gen) {
+		// Region torn down or replaced by a newer generation (which runs
+		// its own ramp). Stop.
+		return false
+	}
+	if 1+len(ad.extraConns) >= ceiling {
+		return false // reached ceiling
+	}
+
+	now := time.Now()
+	// Health gate: the region must currently be passing traffic.
+	lastRecv := c.health.GetDERPRegionReceivedTime(regionID)
+	if lastRecv.IsZero() || now.Sub(lastRecv) > xrayRampHealthyWindow {
+		return true // not healthy yet; keep waiting
+	}
+	// Demand gate: only widen for throughput if traffic is actually
+	// flowing across the region's connections.
+	lastWrite := *ad.lastWrite
+	for _, ew := range ad.extraConns {
+		if ewt := *ew.lastWrite; ewt.After(lastWrite) {
+			lastWrite = ewt
+		}
+	}
+	if now.Sub(lastWrite) > xrayRampDemandWindow {
+		return true // idle; no need to widen now
+	}
+
+	c.addXRayExtraConnLocked(ctx, regionID, &ad)
+	c.activeDerp[regionID] = ad // store back with updated extraConns/writeIdx
+	c.logf("magicsock: derp-%d: xray ramp widened to %d connection(s) (ceiling %d)",
+		regionID, 1+len(ad.extraConns), ceiling)
+	return true
+}
+
+// addXRayExtraConnLocked creates one additional write-only xray connection
+// for regionID, appends it to ad.extraConns, and starts its reader and
+// writer goroutines under ctx (the region's context). c.mu must be held and
+// ad must be the current generation for regionID; the caller stores ad back
+// into c.activeDerp.
+func (c *Conn) addXRayExtraConnLocked(ctx context.Context, regionID int, ad *activeDerp) {
+	ewDC := derphttp.NewRegionClient(c.privateKey, c.logf, c.netMon, func() *tailcfg.DERPRegion {
+		if c.connCtx.Err() != nil {
+			return nil
+		}
+		derpMap := c.derpMapAtomic.Load()
+		if derpMap == nil {
+			return nil
+		}
+		return derpMap.Regions[regionID]
+	})
+	ewDC.HealthTracker = c.health
+	ewDC.SetCanAckPings(true)
+	ewDC.NotePreferred(false) // secondaries are never the home connection
+	ewDC.SetAddressFamilySelector(derpAddrFamSelector{c})
+	ewDC.DNSCache = dnscache.Get()
+
+	ewCh := make(chan derpWriteRequest, derpWriteQueueDepth)
+	ewLastWrite := new(time.Time)
+	*ewLastWrite = time.Now()
+	ew := &activeDerpWriter{
+		c:         ewDC,
+		writeCh:   ewCh,
+		lastWrite: ewLastWrite,
+	}
+	if ad.writeIdx == nil {
+		ad.writeIdx = new(atomic.Uint32)
+	}
+	ad.extraConns = append(ad.extraConns, ew)
+
+	// Late-added connections start immediately (the region is already
+	// active) and join the current generation's WaitGroup so that region
+	// teardown tears them down too. Holding c.mu with a matching
+	// generation guarantees the region has not been closed, so the
+	// primary's goroutines are still running and the WaitGroup counter is
+	// positive — a safe point to Add.
+	wg := c.prevDerp[regionID]
+	wg.Add(2) // reader + writer goroutines
+	go c.runDerpReader(ctx, regionID, ewDC, wg, syncs.ClosedChan())
+	go c.runDerpWriter(ctx, ewDC, ewCh, wg, syncs.ClosedChan())
+}
+
+// __END_CYLONIX_ADD__
 
 // setPeerLastDerpLocked notes that peer is now being written to via
 // the provided DERP regionID, and that the peer advertises a DERP

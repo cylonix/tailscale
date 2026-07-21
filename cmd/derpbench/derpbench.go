@@ -27,8 +27,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -46,15 +49,19 @@ func main() {
 	msgSize := flag.Int("size", 1400, "message size in bytes (default matches WireGuard MTU)")
 
 	// xray underlay flags (optional — omit all to use direct DERP)
-	xrayUUID    := flag.String("xray-uuid", "", "xray VLESS client UUID (enables xray underlay)")
-	xrayPubkey  := flag.String("xray-pubkey", "", "xray REALITY server public key")
+	xrayUUID := flag.String("xray-uuid", "", "xray VLESS client UUID (enables xray underlay)")
+	xrayPubkey := flag.String("xray-pubkey", "", "xray REALITY server public key")
 	xrayShortID := flag.String("xray-shortid", "", "xray REALITY short ID")
-	xrayTunnel  := flag.String("xray-tunnel", "/cylonix-derp-tunnel", "xray XHTTP tunnel path")
-	xraySNI     := flag.String("xray-sni", "www.microsoft.com", "xray REALITY server name")
-	xrayMode      := flag.String("xray-mode", "stream-up", "xhttp upload mode: stream-up or packet-up")
+	xrayTunnel := flag.String("xray-tunnel", "/cylonix-derp-tunnel", "xray XHTTP tunnel path")
+	xraySNI := flag.String("xray-sni", "www.microsoft.com", "xray REALITY server name")
+	xrayMode := flag.String("xray-mode", "stream-up", "xhttp upload mode: stream-up or packet-up")
 	xrayConnCount := flag.Int("xray-conn-count", 1, "number of parallel xray sender connections (requires -allow-parallel-clients on derper)")
 	xrayRecvCount := flag.Int("xray-recv-count", 1, "number of parallel xray receiver connections (requires -allow-parallel-clients on derper)")
-	check         := flag.Bool("check", false, "quick connectivity check: test latency-check + DERP ping, then exit")
+	check := flag.Bool("check", false, "quick connectivity check: test latency-check + DERP ping, then exit")
+	connectTimeout := flag.Duration("connect-timeout", 0, "if >0, cap each Connect() with this deadline (isolates the setup budget; compare 10s vs 30s under impairment)")
+	dialLoop := flag.Int("dial-loop", 0, "if >0, perform N sequential fresh dial+close attempts and report the success rate and dial-time distribution, then exit")
+	xrayDial := flag.String("xray-dial", "", "override host:port that xray TCP-dials (e.g. a local impairing proxy); REALITY SNI and the DERP URL are unaffected")
+	regionClient := flag.Bool("region-client", false, "dial via a RegionClient (like the real app) so the region-based xray patient-budget path is exercised, instead of a URL client")
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -77,8 +84,8 @@ func main() {
 	}
 
 	senderPriv := key.NewNode()
-	recvPriv   := key.NewNode()
-	recvPub    := recvPriv.Public()
+	recvPriv := key.NewNode()
+	recvPub := recvPriv.Public()
 
 	// Build an XRay-enabled DERPNode if xray flags are set.
 	var xrayNode *tailcfg.DERPNode
@@ -104,11 +111,37 @@ func main() {
 			},
 		}
 		log.Printf("xray underlay: mode=%s tunnel=%s sni=%s", *xrayMode, *xrayTunnel, *xraySNI)
+
+		// Optionally redirect only the TCP dial target (e.g. through a local
+		// impairing proxy) while keeping the REALITY SNI and DERP URL intact.
+		if *xrayDial != "" {
+			host, portStr, err := net.SplitHostPort(*xrayDial)
+			if err != nil {
+				log.Fatalf("bad -xray-dial %q: %v", *xrayDial, err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				log.Fatalf("bad -xray-dial port %q: %v", portStr, err)
+			}
+			xrayNode.HostName = host
+			xrayNode.DERPPort = port
+			log.Printf("xray dial redirected to %s:%d", host, port)
+		}
 	}
 
 	// -check: quick connectivity test then exit.
 	if *check {
 		runCheck(*serverURL, xrayNode)
+		return
+	}
+
+	// -dial-loop: measure fresh-dial success rate and latency distribution.
+	// This is the harness for the weak-link setup-budget experiment: apply a
+	// network impairment to the xray server IP (e.g. dnctl/pfctl dummynet or
+	// Network Link Conditioner), then run the loop at -connect-timeout=10s and
+	// again at 30s and compare how many dials complete.
+	if *dialLoop > 0 {
+		runDialLoop(*serverURL, xrayNode, netMon, *dialLoop, *connectTimeout, *regionClient)
 		return
 	}
 
@@ -182,7 +215,7 @@ func main() {
 	default:
 		fmt.Printf("Sending %d-byte packets for %v...\n", *msgSize, *duration)
 	}
-	start    := time.Now()
+	start := time.Now()
 	deadline := start.Add(*duration)
 
 	var txBytes int64
@@ -230,6 +263,83 @@ func main() {
 	for _, s := range senders {
 		s.Close()
 	}
+}
+
+// runDialLoop performs n sequential fresh xray DERP dials, each capped at
+// connectTimeout (0 = derphttp's internal default), and reports how many
+// succeeded along with the dial-time distribution. Each attempt uses a brand
+// new derphttp.Client so every dial pays the full setup cost (TCP + REALITY +
+// XHTTP + DERP upgrade + key exchange) — the exact sequence that a weak or
+// throttled underlay makes fragile.
+func runDialLoop(serverURL string, xrayNode *tailcfg.DERPNode, netMon *netmon.Monitor, n int, connectTimeout time.Duration, regionClient bool) {
+	budget := "derphttp default"
+	if connectTimeout > 0 {
+		budget = "outer cap " + connectTimeout.String()
+	}
+	mode := "url-client"
+	if regionClient {
+		mode = "region-client (exercises patient xray budget)"
+	}
+	fmt.Printf("── dial-loop (%d attempts, %s, %s) ──\n", n, mode, budget)
+
+	// For region-client mode, wrap the xray node in a single-node region so
+	// derphttp's region path (and the region-based patient-budget detection)
+	// is exercised — this is what the real app does.
+	var region *tailcfg.DERPRegion
+	if regionClient && xrayNode != nil {
+		xrayNode.RegionID = 900
+		xrayNode.Name = "900bench"
+		region = &tailcfg.DERPRegion{RegionID: 900, Nodes: []*tailcfg.DERPNode{xrayNode}}
+	}
+
+	var oks int
+	var durs []time.Duration
+	for i := 0; i < n; i++ {
+		var c *derphttp.Client
+		var err error
+		if regionClient {
+			c = derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netMon, func() *tailcfg.DERPRegion { return region })
+		} else {
+			c, err = derphttp.NewClient(key.NewNode(), serverURL, func(string, ...any) {}, netMon)
+			if err != nil {
+				log.Fatalf("NewClient: %v", err)
+			}
+			if xrayNode != nil {
+				c.SetURLDialer(derphttp.XRayDialer(c, xrayNode))
+			}
+		}
+		ctx := context.Background()
+		var cancel context.CancelFunc
+		if connectTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, connectTimeout)
+		}
+		t0 := time.Now()
+		err = c.Connect(ctx)
+		d := time.Since(t0)
+		if cancel != nil {
+			cancel()
+		}
+		if err != nil {
+			fmt.Printf("  attempt %2d: FAIL after %v: %v\n", i+1, d.Round(time.Millisecond), err)
+		} else {
+			oks++
+			durs = append(durs, d)
+			fmt.Printf("  attempt %2d: ok   %v\n", i+1, d.Round(time.Millisecond))
+		}
+		c.Close()
+		time.Sleep(500 * time.Millisecond) // let sockets/instances tear down between attempts
+	}
+
+	fmt.Printf("─────────────────────────────────────────────────\n")
+	fmt.Printf("  Success  : %d/%d (%.0f%%)\n", oks, n, 100*float64(oks)/float64(n))
+	if len(durs) > 0 {
+		sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
+		p := func(q float64) time.Duration { return durs[int(q*float64(len(durs)-1)+0.5)] }
+		fmt.Printf("  Dial time: min=%v  p50=%v  p90=%v  max=%v\n",
+			durs[0].Round(time.Millisecond), p(0.5).Round(time.Millisecond),
+			p(0.9).Round(time.Millisecond), durs[len(durs)-1].Round(time.Millisecond))
+	}
+	fmt.Printf("─────────────────────────────────────────────────\n")
 }
 
 // runCheck performs a quick connectivity test:
@@ -290,8 +400,8 @@ func runCheck(serverURL string, xrayNode *tailcfg.DERPNode) {
 		log.Fatalf("netmon.New: %v", err)
 	}
 	senderPriv := key.NewNode()
-	recvPriv   := key.NewNode()
-	recvPub    := recvPriv.Public()
+	recvPriv := key.NewNode()
+	recvPub := recvPriv.Public()
 
 	makeConn := func(priv key.NodePrivate, label string) *derphttp.Client {
 		c, err := derphttp.NewClient(priv, serverURL, log.Printf, netMon)
