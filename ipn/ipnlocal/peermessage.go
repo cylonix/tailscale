@@ -11,10 +11,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"tailscale.com/atomicfile"
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
@@ -35,6 +39,17 @@ type PeerMessage struct {
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
+// PeerMessageOutgoingAttachment describes one staged local file that must be
+// pushed to the peer over Taildrop before the message itself is delivered.
+// The Path must remain readable by this process until delivery succeeds (the
+// app stages attachments into a daemon-readable location before sending).
+type PeerMessageOutgoingAttachment struct {
+	TransferID   string `json:"transfer_id"`
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	DeclaredSize int64  `json:"declared_size,omitempty"`
+}
+
 type PeerMessageTransportPayload struct {
 	PeerID            string      `json:"peer_id,omitempty"`
 	PeerName          string      `json:"peer_name,omitempty"`
@@ -43,6 +58,9 @@ type PeerMessageTransportPayload struct {
 	Subtitle          string      `json:"subtitle,omitempty"`
 	DeliveryPolicy    string      `json:"delivery_policy,omitempty"`
 	Message           PeerMessage `json:"message"`
+	// OutgoingAttachments is local-only state for the sender's outbound
+	// queue; it is stripped from the payload before the wire send.
+	OutgoingAttachments []PeerMessageOutgoingAttachment `json:"outgoing_attachments,omitempty"`
 }
 
 type PeerMessageSendResult struct {
@@ -63,12 +81,30 @@ type PeerMessageEvent struct {
 
 var PeerMessageEventSink func(PeerMessageEvent) error
 
+// PeerMessageFileSender is set by feature/taildrop to push one staged
+// peer-message attachment to a peer over Taildrop (with outgoing-file
+// progress reporting). It stays nil when the taildrop feature is not linked
+// in, in which case attachment sends fail with an explicit error.
+var PeerMessageFileSender func(ctx context.Context, lb *LocalBackend, peer tailcfg.NodeView, file PeerMessageOutgoingAttachment) error
+
 const (
 	peerMessageDeliveryPolicyDrop  = "drop"
 	peerMessageDeliveryPolicyQueue = "queue"
 
 	peerMessageQueueStateStoreKey ipn.StateKey = "_peerMessageOutboundQueue"
 	peerMessageQueueTick                       = 30 * time.Second
+
+	// peerMessageQueueMaxBackoff caps the per-entry retry backoff.
+	peerMessageQueueMaxBackoff = 5 * time.Minute
+	// peerMessageQueueEntryTTL is how long an entry may wait for delivery
+	// before the queue gives up and emits a "failed" delivery update.
+	peerMessageQueueEntryTTL = 24 * time.Hour
+	// peerMessageQueueMaxEntries bounds the per-profile queue; sends beyond
+	// it are rejected so the caller can surface an immediate failure.
+	peerMessageQueueMaxEntries = 200
+	// peerMessageQueueEntryTimeout bounds a single delivery attempt,
+	// including any attachment uploads.
+	peerMessageQueueEntryTimeout = 10 * time.Minute
 )
 
 type peerMessageQueueEntry struct {
@@ -76,12 +112,20 @@ type peerMessageQueueEntry struct {
 	Payload       PeerMessageTransportPayload `json:"payload"`
 	QueuedAt      string                      `json:"queued_at"`
 	LastAttemptAt string                      `json:"last_attempt_at,omitempty"`
+	NextAttemptAt string                      `json:"next_attempt_at,omitempty"`
 	LastError     string                      `json:"last_error,omitempty"`
 	AttemptCount  int                         `json:"attempt_count"`
+	// SentAttachments lists Payload.OutgoingAttachments transfer IDs that
+	// were already delivered, so retries only resend what's missing.
+	SentAttachments []string `json:"sent_attachments,omitempty"`
 }
 
 type peerMessageQueueWorker struct {
 	signal chan struct{}
+	// urgent, when set before a signal, makes the next flush ignore
+	// per-entry retry backoff — used when network conditions changed
+	// (link change, warm-ping recovery) rather than time passing.
+	urgent atomic.Bool
 }
 
 var peerMessageQueueWorkers sync.Map
@@ -93,51 +137,39 @@ func init() {
 func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payload PeerMessageTransportPayload) (*PeerMessageSendResult, error) {
 	b.ensurePeerMessageQueueWorker()
 	policy := normalizePeerMessageDeliveryPolicy(payload.DeliveryPolicy)
+
+	if policy == peerMessageDeliveryPolicyQueue {
+		// Queue policy always enqueues, even when the peer looks reachable:
+		// it preserves per-peer FIFO ordering (a new message must never
+		// overtake an older queued one), and it keeps large attachment
+		// uploads off the caller's request timeout. The worker is signaled
+		// immediately, so an online peer still sees near-instant delivery;
+		// the sender's UI is flipped to "delivered" by the
+		// message_delivery_update event the flush emits.
+		if err := b.enqueuePeerMessage(peerRef, payload, nil); err != nil {
+			return nil, err
+		}
+		return &PeerMessageSendResult{
+			Accepted:       true,
+			Queued:         true,
+			DeliveryStatus: "pending",
+			MessageID:      payload.Message.ID,
+		}, nil
+	}
+
+	// Drop policy: one immediate attempt, no retry.
+	if len(payload.OutgoingAttachments) > 0 {
+		return nil, fmt.Errorf("outgoing attachments require the queue delivery policy")
+	}
 	nm := b.NetMap()
 	if nm == nil {
-		err := fmt.Errorf("no network map available")
-		if policy == peerMessageDeliveryPolicyQueue {
-			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
-				return nil, enqueueErr
-			}
-			return &PeerMessageSendResult{
-				Accepted:       true,
-				Queued:         true,
-				DeliveryStatus: "pending",
-				MessageID:      payload.Message.ID,
-			}, nil
-		}
-		return nil, err
+		return nil, fmt.Errorf("no network map available")
 	}
-
 	peer, err := resolvePeerByRef(nm, peerRef)
 	if err != nil {
-		if policy == peerMessageDeliveryPolicyQueue {
-			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
-				return nil, enqueueErr
-			}
-			return &PeerMessageSendResult{
-				Accepted:       true,
-				Queued:         true,
-				DeliveryStatus: "pending",
-				MessageID:      payload.Message.ID,
-			}, nil
-		}
 		return nil, err
 	}
-
 	if err := b.sendPeerMessageNow(ctx, nm, peer, peerRef, payload); err != nil {
-		if policy == peerMessageDeliveryPolicyQueue {
-			if enqueueErr := b.enqueuePeerMessage(peerRef, payload, err); enqueueErr != nil {
-				return nil, enqueueErr
-			}
-			return &PeerMessageSendResult{
-				Accepted:       true,
-				Queued:         true,
-				DeliveryStatus: "pending",
-				MessageID:      payload.Message.ID,
-			}, nil
-		}
 		return nil, err
 	}
 	return &PeerMessageSendResult{
@@ -153,6 +185,10 @@ func (b *LocalBackend) sendPeerMessageNow(ctx context.Context, nm *netmap.Networ
 		return fmt.Errorf("peer %q does not expose peerapi", peerRef)
 	}
 
+	// OutgoingAttachments carries sender-local file paths for the outbound
+	// queue; the receiver learns about attachments from the message metadata
+	// and the Taildrop transfers themselves.
+	payload.OutgoingAttachments = nil
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal peerMessage payload: %w", err)
@@ -215,78 +251,223 @@ func (b *LocalBackend) runPeerMessageQueueWorker(worker *peerMessageQueueWorker)
 	defer ticker.Stop()
 	defer peerMessageQueueWorkers.Delete(b)
 
-	_ = b.flushPeerMessageQueue(b.ctx)
+	_ = b.flushPeerMessageQueue(b.ctx, false)
 
 	for {
 		select {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
-			_ = b.flushPeerMessageQueue(b.ctx)
+			_ = b.flushPeerMessageQueue(b.ctx, false)
 		case <-worker.signal:
-			_ = b.flushPeerMessageQueue(b.ctx)
+			_ = b.flushPeerMessageQueue(b.ctx, worker.urgent.Swap(false))
+		}
+	}
+}
+
+// PeerMessageLogf exposes the backend logger to Cylonix feature hooks such
+// as feature/taildrop's peer-message attachment sender.
+func (b *LocalBackend) PeerMessageLogf(format string, args ...any) {
+	b.logf(format, args...)
+}
+
+// signalPeerMessageQueueFlush nudges the queue worker (if running) to attempt
+// a flush now. urgent additionally overrides per-entry retry backoff and is
+// meant for "conditions changed" triggers (link change, warm-ping recovery)
+// as opposed to a new message being enqueued.
+func (b *LocalBackend) signalPeerMessageQueueFlush(urgent bool) {
+	if w, ok := peerMessageQueueWorkers.Load(b); ok {
+		worker := w.(*peerMessageQueueWorker)
+		if urgent {
+			worker.urgent.Store(true)
+		}
+		select {
+		case worker.signal <- struct{}{}:
+		default:
 		}
 	}
 }
 
 func (b *LocalBackend) enqueuePeerMessage(peerRef string, payload PeerMessageTransportPayload, cause error) error {
-	entries, err := b.readPeerMessageQueue()
-	if err != nil {
-		return fmt.Errorf("read peerMessage queue: %w", err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	entries = append(entries, peerMessageQueueEntry{
-		PeerRef:       peerRef,
-		Payload:       payload,
-		QueuedAt:      now,
-		LastAttemptAt: now,
-		LastError:     cause.Error(),
-		AttemptCount:  1,
-	})
-	if err := b.writePeerMessageQueue(entries); err != nil {
-		return fmt.Errorf("write peerMessage queue: %w", err)
-	}
-	if worker, ok := peerMessageQueueWorkers.Load(b); ok {
-		select {
-		case worker.(*peerMessageQueueWorker).signal <- struct{}{}:
-		default:
+	err := func() error {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		entries, err := b.readPeerMessageQueueLocked()
+		if err != nil {
+			return fmt.Errorf("read peerMessage queue: %w", err)
 		}
+		if len(entries) >= peerMessageQueueMaxEntries {
+			return fmt.Errorf("peer-message queue is full (%d messages waiting to be sent)", len(entries))
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		entry := peerMessageQueueEntry{
+			PeerRef:  peerRef,
+			Payload:  payload,
+			QueuedAt: now,
+		}
+		if cause != nil {
+			entry.LastAttemptAt = now
+			entry.LastError = cause.Error()
+			entry.AttemptCount = 1
+		}
+		entries = append(entries, entry)
+		if err := b.writePeerMessageQueueLocked(entries); err != nil {
+			return fmt.Errorf("write peerMessage queue: %w", err)
+		}
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
+	b.signalPeerMessageQueueFlush(false)
 	return nil
 }
 
-func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context) error {
-	entries, err := b.readPeerMessageQueue()
+// nextPeerMessageRetryDelay returns the backoff before the next retry after
+// attempts failed delivery attempts: 30s, 1m, 2m, 4m, then capped at 5m.
+func nextPeerMessageRetryDelay(attempts int) time.Duration {
+	d := peerMessageQueueTick
+	for i := 1; i < attempts && d < peerMessageQueueMaxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, peerMessageQueueMaxBackoff)
+}
+
+func markPeerMessageAttempt(entry *peerMessageQueueEntry, now time.Time, cause error) {
+	entry.AttemptCount++
+	entry.LastAttemptAt = now.UTC().Format(time.RFC3339Nano)
+	entry.NextAttemptAt = now.Add(nextPeerMessageRetryDelay(entry.AttemptCount)).UTC().Format(time.RFC3339Nano)
+	entry.LastError = cause.Error()
+}
+
+func (b *LocalBackend) flushPeerMessageQueue(ctx context.Context, ignoreBackoff bool) error {
+	entries, profileID, err := b.readPeerMessageQueue()
 	if err != nil || len(entries) == 0 {
 		return err
 	}
-
+	processed := len(entries)
+	now := time.Now()
 	nm := b.NetMap()
-	if nm == nil {
-		return nil
-	}
 
 	remaining := make([]peerMessageQueueEntry, 0, len(entries))
+	// Peers whose oldest pending entry couldn't be delivered this round.
+	// Their newer entries are carried over untouched so per-peer FIFO
+	// ordering is preserved.
+	blocked := make(map[string]bool)
+	dirty := false
+
 	for _, entry := range entries {
-		peer, err := resolvePeerByRef(nm, entry.PeerRef)
-		if err != nil {
-			entry.LastAttemptAt = time.Now().UTC().Format(time.RFC3339Nano)
-			entry.LastError = err.Error()
-			entry.AttemptCount++
+		ref := normalizePeerRef(entry.PeerRef)
+
+		// Expire first so a permanently unreachable peer can't grow the
+		// queue without bound.
+		queuedAt, timeErr := time.Parse(time.RFC3339Nano, entry.QueuedAt)
+		if timeErr == nil && now.Sub(queuedAt) > peerMessageQueueEntryTTL {
+			reason := "message expired before it could be delivered"
+			if entry.LastError != "" {
+				reason += ": " + entry.LastError
+			}
+			b.logf("peermessage: giving up on message %q to %q after %d attempts",
+				entry.Payload.Message.ID, entry.PeerRef, entry.AttemptCount)
+			_ = b.emitPeerMessageDeliveryUpdate(entry.Payload, "failed", reason)
+			dirty = true
+			continue
+		}
+
+		if blocked[ref] {
 			remaining = append(remaining, entry)
 			continue
 		}
-		if err := b.sendPeerMessageNow(ctx, nm, peer, entry.PeerRef, entry.Payload); err != nil {
-			entry.LastAttemptAt = time.Now().UTC().Format(time.RFC3339Nano)
-			entry.LastError = err.Error()
-			entry.AttemptCount++
+		if !ignoreBackoff {
+			if next, err := time.Parse(time.RFC3339Nano, entry.NextAttemptAt); err == nil && now.Before(next) {
+				blocked[ref] = true
+				remaining = append(remaining, entry)
+				continue
+			}
+		}
+		if nm == nil {
+			// Nothing is sendable without a netmap; don't burn attempts.
 			remaining = append(remaining, entry)
 			continue
 		}
-		_ = b.emitPeerMessageDeliveryUpdate(entry.Payload, "delivered")
+
+		peer, resolveErr := resolvePeerByRef(nm, entry.PeerRef)
+		if resolveErr != nil {
+			markPeerMessageAttempt(&entry, now, resolveErr)
+			blocked[ref] = true
+			remaining = append(remaining, entry)
+			dirty = true
+			continue
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, peerMessageQueueEntryTimeout)
+		sendErr := b.sendQueuedPeerMessage(attemptCtx, nm, peer, &entry)
+		cancel()
+		if sendErr != nil {
+			b.logf("peermessage: send of %q to %q failed (attempt %d): %v",
+				entry.Payload.Message.ID, entry.PeerRef, entry.AttemptCount+1, sendErr)
+			markPeerMessageAttempt(&entry, now, sendErr)
+			blocked[ref] = true
+			remaining = append(remaining, entry)
+			dirty = true
+			continue
+		}
+		dirty = true
+		_ = b.emitPeerMessageDeliveryUpdate(entry.Payload, "delivered", "")
 	}
 
-	if err := b.writePeerMessageQueue(remaining); err != nil {
+	if !dirty {
+		// Every entry was merely waiting (backoff or no netmap); skip the
+		// rewrite so idle ticks don't churn the file.
+		return nil
+	}
+	return b.commitPeerMessageQueue(profileID, processed, remaining)
+}
+
+// sendQueuedPeerMessage delivers one queue entry: outstanding attachments
+// first (recording per-file progress in entry.SentAttachments), then the
+// message itself.
+func (b *LocalBackend) sendQueuedPeerMessage(ctx context.Context, nm *netmap.NetworkMap, peer tailcfg.NodeView, entry *peerMessageQueueEntry) error {
+	if len(entry.Payload.OutgoingAttachments) > 0 {
+		if PeerMessageFileSender == nil {
+			return fmt.Errorf("peer-message attachments unsupported: taildrop unavailable")
+		}
+		sent := make(map[string]bool, len(entry.SentAttachments))
+		for _, id := range entry.SentAttachments {
+			sent[id] = true
+		}
+		for _, file := range entry.Payload.OutgoingAttachments {
+			if sent[file.TransferID] {
+				continue
+			}
+			if err := PeerMessageFileSender(ctx, b, peer, file); err != nil {
+				return fmt.Errorf("send attachment %q: %w", file.Name, err)
+			}
+			entry.SentAttachments = append(entry.SentAttachments, file.TransferID)
+		}
+	}
+	return b.sendPeerMessageNow(ctx, nm, peer, entry.PeerRef, entry.Payload)
+}
+
+// commitPeerMessageQueue atomically replaces the first processed entries of
+// the stored queue with remaining, preserving entries appended by concurrent
+// enqueues while the flush was sending. If the active profile changed
+// mid-flush the write is skipped: the entries still belong to the old
+// profile's file, and re-delivery is deduplicated by message ID on the
+// receiving side.
+func (b *LocalBackend) commitPeerMessageQueue(profileID string, processed int, remaining []peerMessageQueueEntry) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if string(b.pm.CurrentProfile().ID()) != profileID {
+		b.logf("peermessage: profile changed during queue flush; skipping commit")
+		return nil
+	}
+	current, err := b.readPeerMessageQueueLocked()
+	if err != nil {
+		return fmt.Errorf("re-read peerMessage queue: %w", err)
+	}
+	processed = min(processed, len(current))
+	merged := append(remaining, current[processed:]...)
+	if err := b.writePeerMessageQueueLocked(merged); err != nil {
 		return fmt.Errorf("write peerMessage queue: %w", err)
 	}
 	return nil
@@ -301,24 +482,30 @@ func (b *LocalBackend) peerMessageProfileID() string {
 	return string(b.CurrentProfile().ID())
 }
 
-func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus string) error {
+func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTransportPayload, deliveryStatus, failureMessage string) error {
+	message := map[string]any{
+		"id":              payload.Message.ID,
+		"conversation_id": payload.Message.ConversationID,
+		"delivery_status": deliveryStatus,
+	}
+	eventPayload := map[string]any{
+		"profile_id":      b.peerMessageProfileID(),
+		"conversation_id": payload.ConversationID,
+		"delivery_status": deliveryStatus,
+		"message_id":      payload.Message.ID,
+		"message":         message,
+	}
+	if failureMessage != "" {
+		message["failure_message"] = failureMessage
+		eventPayload["failure_message"] = failureMessage
+	}
 	event := PeerMessageEvent{
 		Version:        "v1",
 		Type:           "message_delivery_update",
 		ConversationID: payload.ConversationID,
 		MessageID:      payload.Message.ID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
-		Payload: map[string]any{
-			"profile_id":      b.peerMessageProfileID(),
-			"conversation_id": payload.ConversationID,
-			"delivery_status": deliveryStatus,
-			"message_id":      payload.Message.ID,
-			"message": map[string]any{
-				"id":              payload.Message.ID,
-				"conversation_id": payload.Message.ConversationID,
-				"delivery_status": deliveryStatus,
-			},
-		},
+		Payload:        eventPayload,
 	}
 	if PeerMessageEventSink != nil {
 		return PeerMessageEventSink(event)
@@ -328,13 +515,75 @@ func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTranspor
 	return nil
 }
 
-func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, error) {
+// peerMessageQueuePathLocked returns the current profile's queue file path,
+// or "" when file storage is unavailable (no active profile, or no writable
+// var root) and the StateStore fallback must be used instead. The file lives
+// outside the StateStore because on Apple platforms the store is backed by
+// the data-protection keychain, which is a poor fit for a growing queue of
+// message payloads.
+// b.mu must be held.
+func (b *LocalBackend) peerMessageQueuePathLocked() string {
+	id := b.pm.CurrentProfile().ID()
+	if id == "" {
+		return ""
+	}
+	dir := b.profileDataPathLocked(id, "peer-message-queue")
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "outbound.json")
+}
+
+func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	entries, err := b.readPeerMessageQueueLocked()
+	return entries, string(b.pm.CurrentProfile().ID()), err
+}
 
+func (b *LocalBackend) readPeerMessageQueueLocked() ([]peerMessageQueueEntry, error) {
 	if b.pm.CurrentProfile().ID() == "" {
 		return nil, nil
 	}
+	path := b.peerMessageQueuePathLocked()
+	if path == "" {
+		return b.readPeerMessageQueueFromStoreLocked()
+	}
+	bs, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// One-time migration from the legacy StateStore location.
+		entries, storeErr := b.readPeerMessageQueueFromStoreLocked()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+		// Write the file (an empty queue becomes "[]") even when the store
+		// had nothing, so idle reads stop consulting the StateStore — on
+		// Apple platforms that's a keychain hit per flush tick.
+		if writeErr := b.writePeerMessageQueueLocked(entries); writeErr != nil {
+			b.logf("peermessage: queue migration to %q failed: %v", path, writeErr)
+			return entries, nil
+		}
+		if len(entries) > 0 {
+			key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
+			if err := b.pm.WriteState(key, nil); err != nil {
+				b.logf("peermessage: clearing legacy queue state failed: %v", err)
+			}
+		}
+		return entries, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if len(bs) == 0 {
+		return nil, nil
+	}
+	var entries []peerMessageQueueEntry
+	if err := json.Unmarshal(bs, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (b *LocalBackend) readPeerMessageQueueFromStoreLocked() ([]peerMessageQueueEntry, error) {
 	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
 	bs, err := b.pm.Store().ReadState(key)
 	if err != nil {
@@ -353,22 +602,38 @@ func (b *LocalBackend) readPeerMessageQueue() ([]peerMessageQueueEntry, error) {
 	return entries, nil
 }
 
-func (b *LocalBackend) writePeerMessageQueue(entries []peerMessageQueueEntry) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.pm.CurrentProfile().ID() == "" {
+func (b *LocalBackend) writePeerMessageQueueLocked(entries []peerMessageQueueEntry) error {
+	id := b.pm.CurrentProfile().ID()
+	if id == "" {
 		return nil
 	}
-	key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
-	if len(entries) == 0 {
-		return b.pm.WriteState(key, nil)
+	path := b.peerMessageQueuePathLocked()
+	if path == "" {
+		key := namespaceKeyForCurrentProfile(b.pm, peerMessageQueueStateStoreKey)
+		if len(entries) == 0 {
+			return b.pm.WriteState(key, nil)
+		}
+		bs, err := json.Marshal(entries)
+		if err != nil {
+			return err
+		}
+		return b.pm.WriteState(key, bs)
+	}
+	// An empty queue is written as "[]" rather than removing the file: a
+	// missing file routes reads through the legacy StateStore migration
+	// path, which on Apple platforms means a keychain read on every idle
+	// flush tick.
+	if entries == nil {
+		entries = []peerMessageQueueEntry{}
 	}
 	bs, err := json.Marshal(entries)
 	if err != nil {
 		return err
 	}
-	return b.pm.WriteState(key, bs)
+	if _, err := b.profileMkdirAllLocked(id, "peer-message-queue"); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(path, bs, 0600)
 }
 
 func resolvePeerByRef(nm *netmap.NetworkMap, peerRef string) (tailcfg.NodeView, error) {

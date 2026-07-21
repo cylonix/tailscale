@@ -374,6 +374,9 @@ func (m *activePeerManager) recordWarmSuccess(ref string) {
 	}
 	if e.failures > 0 {
 		m.b.logf("peermessage_warm: ref=%q recovered after %d failures", ref, e.failures)
+		// The peer's path just recovered; retry any queued outbound
+		// messages immediately instead of waiting out their backoff.
+		m.b.signalPeerMessageQueueFlush(true)
 	}
 	e.failures = 0
 	if e.status != PeerMessageWarmStatusWarm {

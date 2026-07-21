@@ -24,6 +24,7 @@ import (
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/localapi"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/httphdr"
 	"tailscale.com/util/mak"
@@ -160,7 +161,7 @@ func serveFilePut(h *localapi.Handler, w http.ResponseWriter, r *http.Request) {
 		// __CYLONIX_MOD__ pass empty cylonixTransferID — the random ID
 		// above is for progress tracking only, not a peer-message
 		// transfer ID.
-		singleFilePut(h, r.Context(), progressUpdates, w, r.Body, dstURL, file, "")
+		singleFilePut(h.Logf, h.LocalBackend(), r.Context(), progressUpdates, w, r.Body, dstURL, file, "")
 	case "POST":
 		multiFilePost(h, progressUpdates, w, r, peerID, dstURL)
 	default:
@@ -241,7 +242,7 @@ func multiFilePost(h *localapi.Handler, progressUpdates chan (ipn.OutgoingFile),
 		if of.CylonixPeerMessage {
 			cylonixTransferID = of.ID
 		}
-		if !singleFilePut(h, r.Context(), progressUpdates, ww, part, dstURL, of, cylonixTransferID) {
+		if !singleFilePut(h.Logf, h.LocalBackend(), r.Context(), progressUpdates, ww, part, dstURL, of, cylonixTransferID) {
 			return
 		}
 		// __END_CYLONIX_MOD__
@@ -308,7 +309,13 @@ func (ww *multiFilePostResponseWriter) Flush(w http.ResponseWriter) error {
 }
 
 func singleFilePut(
-	h *localapi.Handler,
+	// __BEGIN_CYLONIX_MOD__
+	// Takes logf+lb instead of *localapi.Handler so the peer-message
+	// outbound queue (peermessage_send.go) can reuse this send path
+	// outside of a localapi request.
+	logf logger.Logf,
+	lb *ipnlocal.LocalBackend,
+	// __END_CYLONIX_MOD__
 	ctx context.Context,
 	progressUpdates chan (ipn.OutgoingFile),
 	w http.ResponseWriter,
@@ -339,7 +346,7 @@ func singleFilePut(
 	var resumeDuration time.Duration
 	remainingBody := io.Reader(body)
 	client := &http.Client{
-		Transport: h.LocalBackend().Dialer().PeerAPITransport(),
+		Transport: lb.Dialer().PeerAPITransport(),
 		Timeout:   10 * time.Second,
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", dstURL.String()+"/v0/put/"+outgoingFile.Name, nil)
@@ -354,11 +361,11 @@ func singleFilePut(
 	}
 	switch {
 	case err != nil:
-		h.Logf("could not fetch remote hashes: %v", err)
+		logf("could not fetch remote hashes: %v", err)
 	case resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound:
 		// noop; implies older peerapi without resume support
 	case resp.StatusCode != http.StatusOK:
-		h.Logf("fetch remote hashes status code: %d", resp.StatusCode)
+		logf("fetch remote hashes status code: %d", resp.StatusCode)
 	default:
 		resumeStart := time.Now()
 		dec := json.NewDecoder(resp.Body)
@@ -367,7 +374,7 @@ func singleFilePut(
 			return out, err
 		})
 		if err != nil {
-			h.Logf("reader could not be fully resumed: %v", err)
+			logf("reader could not be fully resumed: %v", err)
 		}
 		resumeDuration = time.Since(resumeStart).Round(time.Millisecond)
 	}
@@ -392,7 +399,7 @@ func singleFilePut(
 	}
 	// __END_CYLONIX_ADD__
 	if offset > 0 {
-		h.Logf("resuming put at offset %d after %v", offset, resumeDuration)
+		logf("resuming put at offset %d after %v", offset, resumeDuration)
 		rangeHdr, _ := httphdr.FormatRange([]httphdr.Range{{Start: offset, Length: 0}})
 		outReq.Header.Set("Range", rangeHdr)
 		if outReq.ContentLength >= 0 {
@@ -401,7 +408,7 @@ func singleFilePut(
 	}
 
 	rp := httputil.NewSingleHostReverseProxy(dstURL)
-	rp.Transport = h.LocalBackend().Dialer().PeerAPITransport()
+	rp.Transport = lb.Dialer().PeerAPITransport()
 	rp.ServeHTTP(w, outReq)
 
 	outgoingFile.Finished = true

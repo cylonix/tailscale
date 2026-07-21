@@ -659,6 +659,13 @@ func NewLocalBackend(logf logger.Logf, logID logid.PublicID, sys *tsd.System, lo
 	eventbus.SubscribeFunc(ec, b.onAppConnectorStoreRoutes)
 	mConn.SetNetInfoCallback(b.setNetInfo) // TODO(tailscale/tailscale#17887): move to eventbus
 
+	// __BEGIN_CYLONIX_ADD__
+	// Start the peer-message outbound queue worker at construction so
+	// messages queued before a daemon/NE restart are retried without
+	// waiting for a new send to arrive.
+	b.ensurePeerMessageQueueWorker()
+	// __END_CYLONIX_ADD__
+
 	return b, nil
 }
 
@@ -1089,6 +1096,15 @@ func (b *LocalBackend) linkChange(delta *netmon.ChangeDelta) {
 			}
 		}
 	}
+
+	// __BEGIN_CYLONIX_ADD__
+	// A significant link change often means previously unreachable peers
+	// are reachable again; nudge the peer-message outbound queue rather
+	// than waiting out its tick or backoff.
+	if delta.RebindLikelyRequired {
+		b.signalPeerMessageQueueFlush(true)
+	}
+	// __END_CYLONIX_ADD__
 }
 
 // Captive portal detection hooks.
