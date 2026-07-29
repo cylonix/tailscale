@@ -77,9 +77,9 @@ var handler = map[string]LocalAPIHandler{
 
 	// The other /localapi/v0/NAME handlers are exact matches and contain only NAME
 	// without a trailing slash:
-	// CYLONIX_ADD: cap, debug-state-traces, envknob, l2relay-capture, log are
-	// cylonix-only LocalAPI endpoints; they are placed in alphabetical order
-	// to satisfy TestKeepItSorted.
+	// CYLONIX_ADD: cap, debug-state-traces, envknob, l2relay-capture, log,
+	// set-app-info are cylonix-only LocalAPI endpoints; they are placed in
+	// alphabetical order to satisfy TestKeepItSorted.
 	"cap":                  (*Handler).serveCap,
 	"check-prefs":          (*Handler).serveCheckPrefs,
 	"check-so-mark-in-use": (*Handler).serveCheckSOMarkInUse,
@@ -95,6 +95,7 @@ var handler = map[string]LocalAPIHandler{
 	"prefs":                (*Handler).servePrefs,
 	"reload-config":        (*Handler).reloadConfig,
 	"reset-auth":           (*Handler).serveResetAuth,
+	"set-app-info":         (*Handler).serveSetAppInfo,
 	"set-expiry-sooner":    (*Handler).serveSetExpirySooner,
 	"shutdown":             (*Handler).serveShutdown,
 	"start":                (*Handler).serveStart,
@@ -1952,6 +1953,32 @@ func (h *Handler) serveCap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("Cap %v '%v' success", op, cap)
+	w.WriteHeader(http.StatusOK)
+}
+
+// CYLONIX_ADD: serveSetAppInfo records the GUI app's version/build in
+// Hostinfo.App and re-sends Hostinfo to the control server so machine
+// details can show what app build a node runs. The 'app' parameter is
+// the app string, e.g. "cylonix-app/1.2.3+45".
+func (h *Handler) serveSetAppInfo(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "app-info access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	app := strings.TrimSpace(r.FormValue("app"))
+	if app == "" {
+		http.Error(w, "missing 'app' parameter", http.StatusBadRequest)
+		return
+	}
+	if len(app) > 256 {
+		http.Error(w, "app info too long", http.StatusBadRequest)
+		return
+	}
+	h.b.SetAppInfo(app)
 	w.WriteHeader(http.StatusOK)
 }
 

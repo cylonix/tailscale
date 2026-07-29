@@ -5161,6 +5161,22 @@ func (b *LocalBackend) doSetExitNodeIDLocked(prefs *ipn.Prefs, exitNodeID string
 	return nil
 }
 
+// SetAppInfo records the GUI app's build description (e.g.
+// "cylonix-app/1.2.3+45") in Hostinfo.App and, if it changed, re-sends
+// Hostinfo to the control server. The GUI calls this at startup, which
+// can be after the initial Hostinfo was already sent, so pushing an
+// update matters more than pre-setting the cached value.
+func (b *LocalBackend) SetAppInfo(app string) {
+	hostinfo.SetApp(app)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hostinfo == nil || b.hostinfo.App == app {
+		return
+	}
+	b.hostinfo.App = app
+	b.doSetHostinfoFilterServicesLocked()
+}
+
 // AddDelNodeCapability sends a node capability add or delete request to the control server
 func (b *LocalBackend) AddDelNodeCapability(cap tailcfg.NodeCapability, op string /* add or del */) error {
 	b.mu.Lock()
