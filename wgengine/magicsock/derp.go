@@ -315,6 +315,16 @@ func (c *Conn) setNearestDERP(derpNum int) (wantDERP bool) {
 		return false
 	}
 	if derpNum == c.myDerp {
+		// __BEGIN_CYLONIX_ADD__
+		// Home is unchanged, but the home connection may have been torn down
+		// (e.g. a transient derp-disabled from an empty netmap) and never
+		// re-established. An unchanged home must still mean a live home
+		// connection; goDerpConnect is a no-op when one already exists.
+		if _, ok := c.activeDerp[derpNum]; !ok && !c.privateKey.IsZero() {
+			c.logf("magicsock: home derp-%v has no connection; reconnecting", derpNum)
+			c.goDerpConnect(derpNum)
+		}
+		// __END_CYLONIX_ADD__
 		// No change.
 		return true
 	}
@@ -1067,6 +1077,12 @@ func (c *Conn) SetDERPMap(dm *tailcfg.DERPMap) {
 	old := c.derpMap
 	c.derpMap = dm
 	if dm == nil {
+		// __BEGIN_CYLONIX_ADD__
+		// Zero the home so a later map restore re-selects it and reconnects.
+		// Without this, setNearestDERP sees the re-picked region equal to the
+		// stale myDerp, takes its no-change path, and never reconnects.
+		c.myDerp = 0
+		// __END_CYLONIX_ADD__
 		c.closeAllDerpLocked("derp-disabled")
 		return
 	}

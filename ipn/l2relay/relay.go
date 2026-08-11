@@ -616,7 +616,14 @@ func (m *l2RelayManager) computeSegmentLocked(nm *netmap.NetworkMap) (segmentID 
 	if !gwMACOK {
 		m.limitedLogf("[v2] l2relay: segment gw-mac unavailable gw=%v", gw)
 	}
+	// A netmap without a Domain (e.g. a truncated first-of-session map
+	// response from the controller) must read as "segment unknown", not as a
+	// distinct segment: hashing with an empty salt would flip every node on
+	// the LAN to a bogus shared segment and churn leader election.
 	salt := nm.Domain
+	if salt == "" {
+		return "", false, 0
+	}
 	in := fmt.Sprintf("segv2|pfx=%s|gw=%s|gwmac=%s", pfx, gw, gwMAC)
 	sum := sha256.Sum256([]byte(salt + "|" + in))
 	segmentID = base64.RawURLEncoding.EncodeToString(sum[:12])
