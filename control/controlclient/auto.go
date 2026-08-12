@@ -122,6 +122,14 @@ type Auto struct {
 	observerQueue execqueue.ExecQueue
 	shutdownFn    func() // to be called prior to shutdown or nil
 
+	// __BEGIN_CYLONIX_ADD__
+	// resetMapBo, when set, tells mapRoutine to reset its backoff before the
+	// next sleep. Set on auth success: backoff accumulated by map polls that
+	// failed while the login was pending must not delay the fresh post-login
+	// session (measured at ~3.5s of retry spacing after web auth completed).
+	resetMapBo atomic.Bool
+	// __END_CYLONIX_ADD__
+
 	mu sync.Mutex // mutex guards the following fields
 
 	started      bool   // whether [Auto.Start] has been called
@@ -396,6 +404,7 @@ func (c *Auto) authRoutine() {
 		c.mu.Unlock()
 
 		c.sendStatus("authRoutine-success", nil, "", nil)
+		c.resetMapBo.Store(true) // __CYLONIX_ADD__
 		c.restartMap()
 		bo.BackOff(ctx, nil)
 	}
@@ -541,6 +550,16 @@ func (c *Auto) mapRoutine() {
 			mrs.bo.BackOff(ctx, nil)
 			c.logf("mapRoutine: paused")
 		} else {
+			// __BEGIN_CYLONIX_ADD__
+			// A login just succeeded: drop backoff accumulated while auth was
+			// pending so the fresh session retries immediately. Reset here (the
+			// same goroutine that calls BackOff) to avoid racing the backoff
+			// state.
+			if c.resetMapBo.CompareAndSwap(true, false) {
+				c.logf("mapRoutine: resetting backoff after login success")
+				mrs.bo.Reset()
+			}
+			// __END_CYLONIX_ADD__
 			mrs.bo.BackOff(ctx, err)
 			report(err, "PollNetMap")
 			// __BEGIN_CYLONIX_ADD__
