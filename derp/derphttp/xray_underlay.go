@@ -5,7 +5,6 @@ package derphttp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -21,34 +20,23 @@ import (
 	clog "github.com/xtls/xray-core/common/log"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
-	"github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/transport/internet"
 	"google.golang.org/protobuf/proto"
 
 	// xray-core requires these blank imports so that init() functions
-	// register protobuf types (e.g. proxyman.InboundConfig) and handlers
-	// before core.StartInstance is called.
-	_ "github.com/xtls/xray-core/app/dispatcher"
+	// register handlers before core.StartInstance is called. The config
+	// protos and most implementations (dispatcher, app/log, vless
+	// outbound, reality, splithttp, tls) are registered via the direct
+	// imports in xray_config_proto.go; only impl-only packages that
+	// nothing else imports remain blank here. infra/conf (and with it
+	// every other xray protocol: hysteria, kcp, vmess, trojan, ...) is
+	// deliberately NOT imported outside tests — it inflates the iOS
+	// network-extension baseline.
 	_ "github.com/xtls/xray-core/app/proxyman/inbound"
 	_ "github.com/xtls/xray-core/app/proxyman/outbound"
 
-	// DNS, logging, routing, and policy are referenced by the default config.
-	_ "github.com/xtls/xray-core/app/dns"
-	_ "github.com/xtls/xray-core/app/log"
-	_ "github.com/xtls/xray-core/app/policy"
-	_ "github.com/xtls/xray-core/app/router"
-
-	// VLESS outbound proxy.
-	_ "github.com/xtls/xray-core/proxy/vless/outbound"
-
-	// Freedom outbound (used as direct connector by default config).
-	_ "github.com/xtls/xray-core/proxy/freedom"
-
-	// Transports and TLS needed for REALITY + XHTTP.
-	_ "github.com/xtls/xray-core/transport/internet/reality"
-	_ "github.com/xtls/xray-core/transport/internet/splithttp"
+	// Raw TCP transport, kept as a safety net for internal dials.
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
-	_ "github.com/xtls/xray-core/transport/internet/tls"
 
 	// Fix dependency cycle caused by core import in internet package.
 	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
@@ -428,58 +416,33 @@ func xrayConfigForNode(node *tailcfg.DERPNode, port xnet.Port, serverName, dialA
 		spiderX = "/" + spiderX
 	}
 
-	vlessSettings := conf.VLessOutboundConfig{
-		Address:    &conf.Address{Address: xnet.ParseAddress(dialAddr)},
-		Port:       uint16(port),
-		Id:         xrayCfg.ClientUUID,
-		Flow:       "", // vision flow is incompatible with xhttp transport
-		Encryption: "none",
-	}
-	settingsBytes, err := json.Marshal(&vlessSettings)
-	if err != nil {
-		return nil, xnet.Destination{}, "", err
-	}
-	settings := json.RawMessage(settingsBytes)
-
-	transport := conf.TransportProtocol("xhttp")
+	// stream-up sends one continuous HTTP POST for the upload
+	// direction instead of a new POST per chunk (packet-up).
+	// packet-up (the "auto" default on HTTP/1.1) caps throughput
+	// at roughly batch_size / max(RTT, ScMinPostsIntervalMs=30ms),
+	// which limits a single DERP relay connection to ~15-40 Mbps.
+	// stream-up eliminates the per-POST round-trip overhead and
+	// matches the server-side "stream-up" configuration.
 	tunnelPath := xrayTunnelPath(xrayCfg.XHTTPTunnel)
 	xhttpMode := xhttpModeForConfig(xrayCfg.XHTTPMode)
-	stream := &conf.StreamConfig{
-		Network:  &transport,
-		Security: "reality",
-		REALITYSettings: &conf.REALITYConfig{
-			ServerName:  realityServerName,
-			PublicKey:   xrayCfg.ServerPublicKey,
-			ShortId:     shortID,
-			Fingerprint: fingerprint,
-			SpiderX:     spiderX,
-		},
-		XHTTPSettings: &conf.SplitHTTPConfig{
-			Host: xhttpHost,
-			Path: tunnelPath,
-			// stream-up sends one continuous HTTP POST for the upload
-			// direction instead of a new POST per chunk (packet-up).
-			// packet-up (the "auto" default on HTTP/1.1) caps throughput
-			// at roughly batch_size / max(RTT, ScMinPostsIntervalMs=30ms),
-			// which limits a single DERP relay connection to ~15-40 Mbps.
-			// stream-up eliminates the per-POST round-trip overhead and
-			// matches the server-side "stream-up" configuration.
-			Mode: xhttpMode,
-		},
-	}
 
-	config := &conf.Config{
-		LogConfig: &conf.LogConfig{LogLevel: "warning"},
-		OutboundConfigs: []conf.OutboundDetourConfig{
-			{
-				Protocol:      "vless",
-				Settings:      &settings,
-				StreamSetting: stream,
-			},
-		},
-	}
-
-	coreConfig, err := config.Build()
+	// Build the config protos directly (see xray_config_proto.go) instead
+	// of going through infra/conf, which links every xray protocol into
+	// the binary. Equivalence with the old conf-based construction is
+	// enforced by TestXrayProtoConfigEquivalence.
+	coreConfig, err := buildXrayCoreProtoConfig(xrayProtoParams{
+		dialAddr:          dialAddr,
+		port:              uint16(port),
+		clientUUID:        xrayCfg.ClientUUID,
+		serverPublicKey:   xrayCfg.ServerPublicKey,
+		realityShortID:    shortID,
+		fingerprint:       fingerprint,
+		realityServerName: realityServerName,
+		spiderX:           spiderX,
+		xhttpHost:         xhttpHost,
+		tunnelPath:        tunnelPath,
+		xhttpMode:         xhttpMode,
+	})
 	if err != nil {
 		return nil, xnet.Destination{}, "", err
 	}
