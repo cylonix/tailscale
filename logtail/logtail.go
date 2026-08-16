@@ -373,8 +373,17 @@ func (lg *Logger) uploading(ctx context.Context) {
 		origlen := -1 // sentinel value: uncompressed
 		// Don't attempt to compress tiny bodies; not worth the CPU cycles.
 		if lg.compressLogs && len(body) > 256 {
+			// __BEGIN_CYLONIX_MOD__
+			// Cap the encoder window: LowMemory alone does not bound the
+			// zstd history buffer, which otherwise scales with the upload
+			// body (multi-MB on startup bursts) — fatal inside the ~50MB
+			// iOS network-extension memory limit. A 64KiB window costs a
+			// few percent of ratio on log text and keeps the encoder
+			// state under ~0.5MB.
 			zbody := zstdframe.AppendEncode(nil, body,
-				zstdframe.FastestCompression, zstdframe.LowMemory(true))
+				zstdframe.FastestCompression, zstdframe.LowMemory(true),
+				zstdframe.MaxWindowSize(64<<10))
+			// __END_CYLONIX_MOD__
 
 			// Only send it compressed if the bandwidth savings are sufficient.
 			// Just the extra headers associated with enabling compression

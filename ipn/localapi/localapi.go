@@ -840,7 +840,11 @@ func (h *Handler) serveStatus(w http.ResponseWriter, r *http.Request) {
 		st = h.b.StatusWithoutPeers()
 	}
 	e := json.NewEncoder(w)
-	e.SetIndent("", "\t")
+	// __BEGIN_CYLONIX_MOD__
+	// No tab indentation: with many peers the indented status is ~20%
+	// larger and json.appendIndent shows up in iOS NE heap profiles;
+	// machine consumers don't need pretty-printing.
+	// __END_CYLONIX_MOD__
 	e.Encode(st)
 }
 
