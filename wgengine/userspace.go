@@ -102,6 +102,20 @@ type userspaceEngine struct {
 
 	linkChangeQueue execqueue.ExecQueue
 
+	// __BEGIN_CYLONIX_ADD__
+	// Leading+trailing rate limiter for the ReSTUN triggered by link
+	// changes. In a weak-Wi-Fi zone the default route can flap between
+	// Wi-Fi and cellular every 1-2s; each change would otherwise start a
+	// fresh netcheck, which re-dials the DERP xray underlay (an expensive
+	// multi-RTT REALITY handshake) — a reconnect storm that pins CPU and
+	// memory. We still Rebind immediately on every major change (cheap and
+	// necessary); only the netcheck/ReSTUN is throttled.
+	linkReSTUNMu    sync.Mutex
+	linkReSTUNLast  time.Time
+	linkReSTUNTimer *time.Timer
+	linkReSTUNWhy   string
+	// __END_CYLONIX_ADD__
+
 	logf           logger.Logf
 	wgLogger       *wglog.Logger // a wireguard-go logging wrapper
 	reqCh          chan struct{}
@@ -1352,6 +1366,14 @@ func (e *userspaceEngine) Close() {
 	// TODO(cmol): Should we wait for it too?
 	// Same question raised in appconnector.go.
 	e.linkChangeQueue.Shutdown()
+	// __BEGIN_CYLONIX_ADD__ stop any pending trailing link-change ReSTUN.
+	e.linkReSTUNMu.Lock()
+	if e.linkReSTUNTimer != nil {
+		e.linkReSTUNTimer.Stop()
+		e.linkReSTUNTimer = nil
+	}
+	e.linkReSTUNMu.Unlock()
+	// __END_CYLONIX_ADD__
 	e.mu.Lock()
 	if e.closing {
 		e.mu.Unlock()
@@ -1465,9 +1487,53 @@ func (e *userspaceEngine) linkChange(delta *netmon.ChangeDelta) {
 		if delta.RebindLikelyRequired {
 			e.magicConn.Rebind()
 		}
-		e.magicConn.ReSTUN(why)
+		e.restunAfterLinkChange(why) // __CYLONIX_MOD__ was e.magicConn.ReSTUN(why)
 	}
 }
+
+// __BEGIN_CYLONIX_ADD__
+// linkChangeReSTUNCooldown bounds how often a link change may trigger a
+// netcheck/ReSTUN. See linkReSTUN* fields.
+const linkChangeReSTUNCooldown = 3 * time.Second
+
+// restunAfterLinkChange rate-limits link-change-triggered ReSTUNs with
+// leading+trailing semantics: the first change after a quiet period
+// ReSTUNs immediately (fast handoff recovery), and a burst of further
+// changes within the cooldown collapses into a single trailing ReSTUN
+// once the burst settles, instead of one netcheck (and xray re-dial) per
+// flap.
+func (e *userspaceEngine) restunAfterLinkChange(why string) {
+	e.linkReSTUNMu.Lock()
+	now := time.Now()
+	if now.Sub(e.linkReSTUNLast) >= linkChangeReSTUNCooldown {
+		e.linkReSTUNLast = now
+		if e.linkReSTUNTimer != nil {
+			e.linkReSTUNTimer.Stop()
+			e.linkReSTUNTimer = nil
+		}
+		e.linkReSTUNMu.Unlock()
+		e.magicConn.ReSTUN(why)
+		return
+	}
+	// Within the cooldown: remember the reason and ensure a single
+	// trailing ReSTUN is scheduled for the end of the window.
+	e.linkReSTUNWhy = why
+	if e.linkReSTUNTimer == nil {
+		delay := linkChangeReSTUNCooldown - now.Sub(e.linkReSTUNLast)
+		e.linkReSTUNTimer = time.AfterFunc(delay, func() {
+			e.linkReSTUNMu.Lock()
+			w := e.linkReSTUNWhy
+			e.linkReSTUNLast = time.Now()
+			e.linkReSTUNTimer = nil
+			e.linkReSTUNMu.Unlock()
+			e.logf("[v1] magicsock: coalesced link-change ReSTUN (%q)", w)
+			e.magicConn.ReSTUN(w)
+		})
+	}
+	e.linkReSTUNMu.Unlock()
+}
+
+// __END_CYLONIX_ADD__
 
 func (e *userspaceEngine) SetNetworkMap(nm *netmap.NetworkMap) {
 	e.mu.Lock()
