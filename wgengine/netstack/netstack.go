@@ -1922,12 +1922,29 @@ func (ns *Impl) handleMagicDNSUDP(srcAddr netip.AddrPort, c *gonet.UDPConn) {
 			}
 			return
 		}
-		resp, err := ns.dns.Query(context.Background(), q[:n], "udp", srcAddr)
+		// __BEGIN_CYLONIX_MOD__
+		// Bound the query so a wedged resolver can never park this
+		// goroutine forever, and answer SERVFAIL on failure instead of
+		// silently dropping: an unanswered quad-100 query costs every
+		// client its full resolver timeout (40s on Android's netd). The
+		// deadline is intentionally longer than the resolver's own
+		// per-query forwarding timeout so it only catches hangs.
+		qctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		resp, err := ns.dns.Query(qctx, q[:n], "udp", srcAddr)
+		cancel()
 		if err != nil {
 			ns.logf("dns udp query: %v", err)
+			if n >= 12 {
+				// Echo the query back as a SERVFAIL so the client
+				// fails fast and can try its fallbacks.
+				q[2] |= 0x80          // QR = response
+				q[3] = 0x80 | 0x02    // RA set, Z cleared, RCODE = SERVFAIL
+				c.Write(q[:n])
+			}
 			return
 		}
 		c.Write(resp)
+		// __END_CYLONIX_MOD__
 	}
 }
 

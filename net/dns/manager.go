@@ -72,9 +72,18 @@ type Manager struct {
 	knobs    *controlknobs.Knobs // or nil
 	goos     string              // if empty, gets set to runtime.GOOS
 
-	mu                  sync.Mutex // guards following
-	config              *Config    // Tracks the last viable DNS configuration set by Set.  nil on failures other than compilation failures or if set has never been called.
-	queryResponseMapper ResponseMapper
+	mu     sync.Mutex // guards following
+	config *Config    // Tracks the last viable DNS configuration set by Set.  nil on failures other than compilation failures or if set has never been called.
+
+	// __BEGIN_CYLONIX_MOD__
+	// queryResponseMapper is read on every DNS query and must never
+	// contend with m.mu: m.mu is held across Set/RecompileDNSConfig,
+	// which on Android call into the platform (VpnService/JNI) and can
+	// block indefinitely. When it was guarded by m.mu, a wedged config
+	// call parked every DNS reply forever (total silent DNS outage, no
+	// SERVFAIL, goroutine pile-up). Kept in an atomic instead.
+	queryResponseMapper atomic.Pointer[ResponseMapper]
+	// __END_CYLONIX_MOD__
 }
 
 // NewManager created a new manager from the given config.
@@ -495,11 +504,13 @@ func (m *Manager) Query(ctx context.Context, bs []byte, family string, from neti
 	if err != nil {
 		return outbs, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.queryResponseMapper != nil {
-		outbs = m.queryResponseMapper(outbs)
+	// __BEGIN_CYLONIX_MOD__
+	// Read the conn25 response mapper without touching m.mu; queries must
+	// never block behind Set/RecompileDNSConfig (see field comment).
+	if mapper := m.queryResponseMapper.Load(); mapper != nil && *mapper != nil {
+		outbs = (*mapper)(outbs)
 	}
+	// __END_CYLONIX_MOD__
 	return outbs, err
 }
 
@@ -699,7 +710,5 @@ func CleanUp(logf logger.Logf, netMon *netmon.Monitor, bus *eventbus.Bus, health
 var metricDNSQueryErrorQueue = clientmetric.NewCounter("dns_query_local_error_queue")
 
 func (m *Manager) SetQueryResponseMapper(fx ResponseMapper) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.queryResponseMapper = fx
+	m.queryResponseMapper.Store(&fx) // __CYLONIX_MOD__ atomic, not m.mu (see field comment)
 }
