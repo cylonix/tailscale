@@ -44,6 +44,18 @@ var cylonixControllerIPs = map[string][]netip.Addr{
 		netip.MustParseAddr("2606:4700:3032::6815:1e0f"),
 		netip.MustParseAddr("2606:4700:3037::ac43:9633"),
 	},
+	"log.cylonix.io": {
+		// Same Cloudflare zone as manage.cylonix.io. Without this entry,
+		// logtail cannot re-dial the log service once system DNS breaks:
+		// the Cylonix DERP fronts :443 with an xray REALITY decoy (so its
+		// /bootstrap-dns is unreachable) and stock Tailscale DERPs only
+		// resolve their own allowlist, leaving the bootstrap loop spinning
+		// forever. Observed in the field 2026-08-22.
+		netip.MustParseAddr("104.21.30.15"),
+		netip.MustParseAddr("172.67.150.51"),
+		netip.MustParseAddr("2606:4700:3032::6815:1e0f"),
+		netip.MustParseAddr("2606:4700:3037::ac43:9633"),
+	},
 }
 
 // cylonixStaticLookup returns hardcoded fallback IPs for well-known Cylonix
