@@ -66,13 +66,26 @@ func (q *queue) Write(pkt *stack.PacketBuffer) tcpip.Error {
 	if q.closed {
 		return &tcpip.ErrClosedForSend{}
 	}
+	// __BEGIN_CYLONIX_MOD__
+	// Drop on a full queue instead of blocking, like a real NIC ring.
+	// The blocking send parked every netstack egress goroutine forever
+	// once the inject() drainer died: 2300+ goroutines were captured
+	// stuck here on Android (2026-08-25) with all VPN DNS/TCP silently
+	// blackholed. Protocols recover from a dropped packet; they cannot
+	// recover from a write that never returns. Note the IncRef in the
+	// send-case expression is evaluated before the select chooses a
+	// case, so the non-send cases must DecRef.
 	select {
 	case q.c <- pkt.IncRef():
 		return nil
 	case <-q.closedCh:
 		pkt.DecRef()
 		return &tcpip.ErrClosedForSend{}
+	default:
+		pkt.DecRef()
+		return &tcpip.ErrNoBufferSpace{}
 	}
+	// __END_CYLONIX_MOD__
 }
 
 func (q *queue) Drain() int {

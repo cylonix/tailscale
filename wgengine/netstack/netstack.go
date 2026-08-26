@@ -1031,10 +1031,19 @@ func (ns *Impl) inject() {
 
 		// pkt has a non-zero refcount, so injection methods takes
 		// ownership of one count and will decrement on completion.
+		//
+		// __BEGIN_CYLONIX_MOD__
+		// Never exit this loop on an injection error: this goroutine is
+		// the only drainer of the linkEndpoint queue, and its death
+		// silently kills every netstack service (MagicDNS, peerapi) —
+		// egress writers park forever on the full queue while the rest
+		// of the tunnel keeps working. Injection errors are transient on
+		// mobile (e.g. a TUN fd swap during VPN re-establish on a Wi-Fi
+		// flap); treat them like a dropped packet and keep draining.
 		if sendToHost {
 			if err := ns.tundev.InjectInboundPacketBuffer(pkt, inboundBuffs, inboundBuffsSizes); err != nil {
-				ns.logf("netstack inject inbound: %v", err)
-				return
+				ns.logf("netstack inject inbound: %v (dropping; injector continues)", err)
+				continue
 			}
 		} else {
 			// Self-addressed packet: deliver back into gVisor directly
@@ -1048,10 +1057,11 @@ func (ns *Impl) inject() {
 			}
 
 			if err := ns.tundev.InjectOutboundPacketBuffer(pkt); err != nil {
-				ns.logf("netstack inject outbound: %v", err)
-				return
+				ns.logf("netstack inject outbound: %v (dropping; injector continues)", err)
+				continue
 			}
 		}
+		// __END_CYLONIX_MOD__
 	}
 }
 
