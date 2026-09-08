@@ -1455,6 +1455,7 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 	defer watcher.Close()
 
 	startErrCh := make(chan error, 1)
+	newNodeKeyCh := make(chan struct{}, 1) // __CYLONIX_ADD__
 
 	go func() {
 		if !isRunning {
@@ -1478,6 +1479,23 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 			}
 		}
 		if opt.Reauthenticate {
+			// __BEGIN_CYLONIX_ADD__
+			if !isRunning {
+				// Start above recreated the control client, which cleared the
+				// backend's cached auth URL, so the interactive login below
+				// cannot reuse it: the control client generates a new node
+				// key and registers it (LoginInteractive forces a key regen).
+				// The auth URL issued for that fresh registration may be
+				// byte-identical to the pre-Start one (the Cylonix control
+				// plane reuses pending login URLs), so tell the watch loop to
+				// stop treating the pre-Start URL as stale. Signalled before
+				// the call so the loop cannot process the new URL ahead of it.
+				select {
+				case newNodeKeyCh <- struct{}{}:
+				default:
+				}
+			}
+			// __END_CYLONIX_ADD__
 			if err := s.lc.StartLoginInteractive(ctx); err != nil {
 				s.safeLogf("startLogin: %v", err)
 				startErrCh <- fmt.Errorf("start login interactive: %w", err)
@@ -1509,6 +1527,16 @@ func (s *Server) tailscaleUp(ctx context.Context, st *ipnstate.Status, opt tails
 			msg := *n.ErrMessage
 			return "", fmt.Errorf("backend error: %v", msg)
 		}
+		// __BEGIN_CYLONIX_ADD__
+		select {
+		case <-newNodeKeyCh:
+			// A fresh node-key registration is in flight, so the pre-existing
+			// auth URL snapshot no longer identifies a stale URL. Accept the
+			// URL control issues for the new key even if it is unchanged.
+			origAuthURL = ""
+		default:
+		}
+		// __END_CYLONIX_ADD__
 		if url := n.BrowseToURL; url != nil && printAuthURL(*url) {
 			return *url, nil
 		}
