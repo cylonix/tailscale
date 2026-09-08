@@ -21,10 +21,17 @@ import (
 )
 
 const (
-	peerMessageWarmInterval    = 25 * time.Second
-	peerMessageWarmTimeout     = 30 * time.Second
-	peerMessageWarmMaxBackoff  = 5 * time.Minute
-	peerMessageWarmFailWarnCap = 3 // log full failure detail this many times, then stay at debug
+	peerMessageWarmInterval      = 25 * time.Second
+	peerMessageWarmRetryInterval = 10 * time.Second // quick re-probe after a single failure
+	peerMessageWarmTimeout       = 30 * time.Second
+	peerMessageWarmMaxBackoff    = 5 * time.Minute
+	peerMessageWarmFailWarnCap   = 3 // log full failure detail this many times, then stay at debug
+
+	// peerMessageWarmErrorThreshold is the consecutive-failure count at which
+	// the published status becomes "error". A single failure is reported as
+	// still warming: one timeout while a path forms is routine, and clients
+	// reserve red for "online but unreachable".
+	peerMessageWarmErrorThreshold = 2
 )
 
 // PeerMessageWarmStatus values surfaced to clients via PeerMessageEvent.
@@ -33,6 +40,10 @@ const (
 	PeerMessageWarmStatusWarming = "warming"
 	PeerMessageWarmStatusWarm    = "warm"
 	PeerMessageWarmStatusError   = "error"
+	// PeerMessageWarmStatusOffline means control reports the peer offline, so
+	// no probe was sent. Clients render it as presence (grey), not as a
+	// connection error.
+	PeerMessageWarmStatusOffline = "offline"
 )
 
 type activePeerEntry struct {
@@ -41,8 +52,8 @@ type activePeerEntry struct {
 
 	// status / failures are updated only by the warm loop goroutine for this
 	// peer (one goroutine per ref), but read under m.mu by snapshot helpers.
-	status     string // last published status; see PeerMessageWarmStatus*
-	failures   int    // consecutive warm failures; reset on success
+	status   string // last published status; see PeerMessageWarmStatus*
+	failures int    // consecutive warm failures; reset on success
 }
 
 // activePeerManager tracks peer references that should be kept warm and runs
@@ -286,17 +297,37 @@ func (m *activePeerManager) runWarmLoop(ctx context.Context, ref string) {
 }
 
 // nextWarmInterval picks the next sleep duration based on consecutive failure
-// count. Healthy peers stay at the base 25s interval. Failures double the
+// count. Healthy peers stay at the base 25s interval. The first failure is
+// re-probed quickly so a transient timeout can be told apart from a real
+// outage before the client is shown an error; further failures double the
 // interval, capped at peerMessageWarmMaxBackoff.
 func nextWarmInterval(failures int) time.Duration {
-	if failures <= 0 {
+	switch {
+	case failures <= 0:
 		return peerMessageWarmInterval
+	case failures == 1:
+		return peerMessageWarmRetryInterval
 	}
-	d := peerMessageWarmInterval << uint(failures) // 25s, 50s, 100s, 200s, ...
-	if d > peerMessageWarmMaxBackoff || d < 0 {
+	shift := uint(failures - 1) // 50s, 100s, 200s, ...
+	if shift >= 8 {
+		// Already far past the cap; also avoids shifting into overflow.
+		return peerMessageWarmMaxBackoff
+	}
+	d := peerMessageWarmInterval << shift
+	if d > peerMessageWarmMaxBackoff {
 		return peerMessageWarmMaxBackoff
 	}
 	return d
+}
+
+// statusAfterFailure maps a consecutive-failure count to the status to
+// publish. Below the threshold the path is reported as still warming, so a
+// single timeout shows as "connecting" rather than an error.
+func statusAfterFailure(failures int) string {
+	if failures >= peerMessageWarmErrorThreshold {
+		return PeerMessageWarmStatusError
+	}
+	return PeerMessageWarmStatusWarming
 }
 
 // warmOnce performs a single warm GET to the peer's PeerAPI root. The root is
@@ -313,6 +344,13 @@ func (m *activePeerManager) warmOnce(ctx context.Context, ref string) {
 	peer, err := resolvePeerByRef(nm, ref)
 	if err != nil {
 		m.recordWarmFailure(ref, err)
+		return
+	}
+	// Control says the peer is offline: don't spend a 30s timeout probing a
+	// node that cannot answer, and don't report the inevitable failure as an
+	// error. A nil Online flag means unknown, so we probe.
+	if online := peer.Online(); online.Valid() && !online.Get() {
+		m.recordPeerOffline(ref)
 		return
 	}
 	base := peerAPIBase(nm, peer)
@@ -359,9 +397,26 @@ func (m *activePeerManager) recordWarmFailure(ref string, cause error) {
 	} else {
 		m.b.logf("[v1] peermessage_warm: ref=%q still failing (attempt %d): %v", ref, e.failures, cause)
 	}
-	if e.status != PeerMessageWarmStatusError {
-		e.status = PeerMessageWarmStatusError
-		m.b.emitWarmStatusLocked(ref, PeerMessageWarmStatusError)
+	if next := statusAfterFailure(e.failures); e.status != next {
+		e.status = next
+		m.b.emitWarmStatusLocked(ref, next)
+	}
+}
+
+// recordPeerOffline notes that control reports the peer offline. Failure
+// history is cleared so the first probe after the peer returns starts fresh.
+func (m *activePeerManager) recordPeerOffline(ref string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.peers[ref]
+	if !ok {
+		return
+	}
+	e.failures = 0
+	if e.status != PeerMessageWarmStatusOffline {
+		m.b.logf("[v1] peermessage_warm: ref=%q peer offline; skipping probe", ref)
+		e.status = PeerMessageWarmStatusOffline
+		m.b.emitWarmStatusLocked(ref, PeerMessageWarmStatusOffline)
 	}
 }
 
