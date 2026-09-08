@@ -63,6 +63,13 @@ type activePeerManager struct {
 	mu    sync.Mutex
 	peers map[string]*activePeerEntry // key: normalized peer ref
 
+	// pendingSignals parks at most one signal per peer (latest wins) that
+	// could not be delivered, to be resent on the next warm success.
+	// signalUnsupported records peers that answered 404 to a signal so we
+	// stop sending for the rest of the session. Both keyed like peers.
+	pendingSignals    map[string]PeerMessageSignal
+	signalUnsupported map[string]bool
+
 	// global is the long-lived session used by method-channel callers
 	// (Android/Apple) that can't hold a streaming HTTP connection. Its
 	// lifecycle is governed by globalDeadline, refreshed on every Set call.
@@ -437,6 +444,45 @@ func (m *activePeerManager) recordWarmSuccess(ref string) {
 	if e.status != PeerMessageWarmStatusWarm {
 		e.status = PeerMessageWarmStatusWarm
 		m.b.emitWarmStatusLocked(ref, PeerMessageWarmStatusWarm)
+	}
+	// The path is known good; deliver any signal parked while it was not.
+	if signal, ok := m.pendingSignals[ref]; ok {
+		delete(m.pendingSignals, ref)
+		m.b.goTracker.Go(func() { m.deliverSignal(ref, signal) })
+	}
+}
+
+// deliverSignal sends signal to ref now. If the peer cannot be reached the
+// signal is parked (replacing any earlier one) until the warm loop next
+// reaches the peer; a 404 marks the peer as predating signals.
+func (m *activePeerManager) deliverSignal(ref string, signal PeerMessageSignal) {
+	ref = normalizePeerRef(ref)
+	m.mu.Lock()
+	unsupported := m.signalUnsupported[ref]
+	m.mu.Unlock()
+	if unsupported {
+		return
+	}
+	err := m.b.sendPeerMessageSignal(context.Background(), ref, signal)
+	switch {
+	case err == nil:
+		m.b.logf("[v1] peermessage_signal: ref=%q sent %s", ref, signal.Type)
+	case errors.Is(err, errPeerMessageSignalUnsupported):
+		m.mu.Lock()
+		if m.signalUnsupported == nil {
+			m.signalUnsupported = map[string]bool{}
+		}
+		m.signalUnsupported[ref] = true
+		m.mu.Unlock()
+		m.b.logf("peermessage_signal: ref=%q does not support signals; skipping for this session", ref)
+	default:
+		m.mu.Lock()
+		if m.pendingSignals == nil {
+			m.pendingSignals = map[string]PeerMessageSignal{}
+		}
+		m.pendingSignals[ref] = signal
+		m.mu.Unlock()
+		m.b.logf("[v1] peermessage_signal: ref=%q parked %s until reachable: %v", ref, signal.Type, err)
 	}
 }
 

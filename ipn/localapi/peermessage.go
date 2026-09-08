@@ -17,6 +17,32 @@ func init() {
 	Register("peer-message/send", (*Handler).servePeerMessageSend)
 	Register("peer-message/active-peers-stream", (*Handler).servePeerMessageActivePeersStream)
 	Register("peer-message/active-peers", (*Handler).servePeerMessageActivePeers)
+	Register("peer-message/mark-read", (*Handler).servePeerMessageMarkRead)
+}
+
+// servePeerMessageMarkRead asks the daemon to send a read receipt to a peer.
+// It answers as soon as the receipt is accepted; delivery is asynchronous and
+// the daemon retries on its own once the peer is reachable.
+func (h *Handler) servePeerMessageMarkRead(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "want POST", http.StatusMethodNotAllowed)
+		return
+	}
+	var receipt ipnlocal.PeerMessageReadReceipt
+	if err := json.NewDecoder(r.Body).Decode(&receipt); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	if err := h.b.SendPeerMessageReadReceipt(receipt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{})
 }
 
 // peerMessageActivePeersStreamReadDeadline is the per-frame read deadline for

@@ -70,6 +70,40 @@ type PeerMessageSendResult struct {
 	MessageID      string `json:"message_id,omitempty"`
 }
 
+// Signals are small, latest-wins notifications exchanged between daemons
+// outside the persisted message queue: never stored on disk, never retried
+// behind messages. Today only read receipts use them.
+const (
+	peerMessageSignalPath    = "/v0/peer-message/signal"
+	peerMessageSignalTimeout = 5 * time.Second
+
+	PeerMessageSignalTypeRead = "read"
+)
+
+// PeerMessageSignal is the wire form of a signal posted to a peer's
+// peerMessageSignalPath.
+type PeerMessageSignal struct {
+	Type string `json:"type"`
+	// ConversationID is the sender's conversation id for the peer. The
+	// receiver keys the conversation by the sending peer instead, so this is
+	// informational.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// UpToMessageID is the newest message the reader has seen; everything
+	// the sender wrote before it in the conversation counts as read.
+	UpToMessageID string `json:"up_to_message_id,omitempty"`
+	At            string `json:"at,omitempty"`
+}
+
+// PeerMessageReadReceipt is the LocalAPI request asking the daemon to tell
+// PeerRef that we have read its messages up to UpToMessageID.
+type PeerMessageReadReceipt struct {
+	PeerRef        string `json:"peer_ref"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	UpToMessageID  string `json:"up_to_message_id"`
+}
+
+var errPeerMessageSignalUnsupported = fmt.Errorf("peer does not support peer-message signals")
+
 type PeerMessageEvent struct {
 	Version        string         `json:"version"`
 	Type           string         `json:"type"`
@@ -132,6 +166,7 @@ var peerMessageQueueWorkers sync.Map
 
 func init() {
 	RegisterPeerAPIHandler("/v0/peer-message/message", handlePeerMessage)
+	RegisterPeerAPIHandler(peerMessageSignalPath, handlePeerMessageSignal)
 }
 
 func (b *LocalBackend) SendPeerMessage(ctx context.Context, peerRef string, payload PeerMessageTransportPayload) (*PeerMessageSendResult, error) {
@@ -745,3 +780,141 @@ func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request
 	io.WriteString(w, "{}\n")
 }
 
+// handlePeerMessageSignal receives a signal from a same-user peer. A read
+// receipt becomes a "messages_read" event for the app, which owns the message
+// history and flips its own outbound messages to "read".
+func handlePeerMessageSignal(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request) {
+	if r.Method != httpm.POST {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !ph.IsSelfUntagged() {
+		http.Error(w, "peerMessage signals are only allowed for same-user peers", http.StatusForbidden)
+		return
+	}
+	var signal PeerMessageSignal
+	if err := json.NewDecoder(r.Body).Decode(&signal); err != nil {
+		http.Error(w, "invalid peerMessage signal", http.StatusBadRequest)
+		return
+	}
+	switch signal.Type {
+	case PeerMessageSignalTypeRead:
+		if signal.UpToMessageID == "" {
+			http.Error(w, "missing up_to_message_id", http.StatusBadRequest)
+			return
+		}
+		b := ph.LocalBackend()
+		event := peerMessageReadEvent(b.peerMessageProfileID(), ph.Peer(), signal)
+		if PeerMessageEventSink != nil {
+			if err := PeerMessageEventSink(event); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
+			b.send(ipn.Notify{PeerMessageEvent: event})
+		}
+	default:
+		http.Error(w, "unknown signal type", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, "{}\n")
+}
+
+// peerMessageReadEvent builds the app-facing event for a read receipt from
+// peer. ConversationID is the reader's stable id: on this side the
+// conversation with the reader is keyed by the reader, not by the id the
+// reader used for us.
+func peerMessageReadEvent(profileID string, peer tailcfg.NodeView, signal PeerMessageSignal) PeerMessageEvent {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	readAt := signal.At
+	if readAt == "" {
+		readAt = now
+	}
+	return PeerMessageEvent{
+		Version:        "v1",
+		Type:           "messages_read",
+		ConversationID: string(peer.StableID()),
+		MessageID:      signal.UpToMessageID,
+		Timestamp:      now,
+		Payload: map[string]any{
+			"profile_id":       profileID,
+			"from_peer_id":     peer.StableID(),
+			"from_peer_name":   peer.ComputedName(),
+			"up_to_message_id": signal.UpToMessageID,
+			"read_at":          readAt,
+		},
+	}
+}
+
+// SendPeerMessageReadReceipt tells receipt.PeerRef that we have read its
+// messages up to receipt.UpToMessageID. It returns once the receipt is
+// accepted: the send runs in the background with a short timeout and is never
+// queued behind messages. An unreachable peer parks the receipt (latest wins,
+// one per peer) until the warm loop next reaches it; a peer that answers 404
+// predates signals and is skipped for the rest of the session.
+func (b *LocalBackend) SendPeerMessageReadReceipt(receipt PeerMessageReadReceipt) error {
+	peerRef := strings.TrimSpace(receipt.PeerRef)
+	if peerRef == "" {
+		return fmt.Errorf("missing peer_ref")
+	}
+	if receipt.UpToMessageID == "" {
+		return fmt.Errorf("missing up_to_message_id")
+	}
+	signal := PeerMessageSignal{
+		Type:           PeerMessageSignalTypeRead,
+		ConversationID: receipt.ConversationID,
+		UpToMessageID:  receipt.UpToMessageID,
+		At:             time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	m := b.activePeerManager()
+	b.goTracker.Go(func() { m.deliverSignal(peerRef, signal) })
+	return nil
+}
+
+// sendPeerMessageSignal posts one signal to the peer. It reports
+// errPeerMessageSignalUnsupported when the peer's daemon predates signals.
+func (b *LocalBackend) sendPeerMessageSignal(ctx context.Context, peerRef string, signal PeerMessageSignal) error {
+	nm := b.NetMap()
+	if nm == nil {
+		return fmt.Errorf("no netmap")
+	}
+	peer, err := resolvePeerByRef(nm, peerRef)
+	if err != nil {
+		return err
+	}
+	base := peerAPIBase(nm, peer)
+	if base == "" {
+		return fmt.Errorf("peer %q does not expose peerapi", peerRef)
+	}
+	body, err := json.Marshal(signal)
+	if err != nil {
+		return fmt.Errorf("marshal peerMessage signal: %w", err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, peerMessageSignalTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, httpm.POST, base+peerMessageSignalPath, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create peerapi signal request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Transport: b.Dialer().PeerAPITransport(),
+		Timeout:   peerMessageSignalTimeout,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send peerMessage signal: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		return errPeerMessageSignalUnsupported
+	default:
+		return fmt.Errorf("peerapi signal failed: status=%d", resp.StatusCode)
+	}
+}
