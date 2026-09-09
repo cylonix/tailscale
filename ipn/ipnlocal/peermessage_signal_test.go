@@ -5,9 +5,31 @@ package ipnlocal
 
 import (
 	"testing"
+	"time"
 
 	"tailscale.com/tailcfg"
 )
+
+func TestNextSignalRetryDelay(t *testing.T) {
+	tests := []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{0, 15 * time.Second},
+		{1, 15 * time.Second},
+		{2, 30 * time.Second},
+		{3, time.Minute},
+		{4, 2 * time.Minute},
+		{5, 4 * time.Minute},
+		{6, 5 * time.Minute},
+		{60, 5 * time.Minute}, // capped, never overflows
+	}
+	for _, tt := range tests {
+		if got := nextSignalRetryDelay(tt.attempts); got != tt.want {
+			t.Errorf("nextSignalRetryDelay(%d) = %v, want %v", tt.attempts, got, tt.want)
+		}
+	}
+}
 
 func TestPeerMessageReadEvent(t *testing.T) {
 	reader := (&tailcfg.Node{

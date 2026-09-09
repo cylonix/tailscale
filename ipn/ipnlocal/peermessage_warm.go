@@ -64,11 +64,11 @@ type activePeerManager struct {
 	peers map[string]*activePeerEntry // key: normalized peer ref
 
 	// pendingSignals parks at most one signal per peer (latest wins) that
-	// could not be delivered, to be resent on the next warm success.
-	// signalUnsupported records peers that answered 404 to a signal so we
-	// stop sending for the rest of the session. Both keyed like peers.
-	pendingSignals    map[string]PeerMessageSignal
-	signalUnsupported map[string]bool
+	// could not be delivered; each has a retry timer and is also flushed on
+	// the next warm success. signalUnsupported records, per peer, until when
+	// to skip signals after the peer answered 404. Both keyed like peers.
+	pendingSignals    map[string]*parkedSignal
+	signalUnsupported map[string]time.Time
 
 	// global is the long-lived session used by method-channel callers
 	// (Android/Apple) that can't hold a streaming HTTP connection. Its
@@ -445,45 +445,118 @@ func (m *activePeerManager) recordWarmSuccess(ref string) {
 		e.status = PeerMessageWarmStatusWarm
 		m.b.emitWarmStatusLocked(ref, PeerMessageWarmStatusWarm)
 	}
-	// The path is known good; deliver any signal parked while it was not.
-	if signal, ok := m.pendingSignals[ref]; ok {
+	// The path is known good; deliver any signal parked while it was not,
+	// without waiting for its retry timer.
+	if p, ok := m.pendingSignals[ref]; ok {
 		delete(m.pendingSignals, ref)
-		m.b.goTracker.Go(func() { m.deliverSignal(ref, signal) })
+		if p.timer != nil {
+			p.timer.Stop()
+		}
+		m.b.goTracker.Go(func() { m.deliverSignal(ref, p.signal, p.attempts) })
 	}
 }
 
-// deliverSignal sends signal to ref now. If the peer cannot be reached the
-// signal is parked (replacing any earlier one) until the warm loop next
-// reaches the peer; a 404 marks the peer as predating signals.
-func (m *activePeerManager) deliverSignal(ref string, signal PeerMessageSignal) {
+// parkedSignal is a signal awaiting redelivery to one peer.
+type parkedSignal struct {
+	signal   PeerMessageSignal
+	attempts int         // failed deliveries so far; drives the retry backoff
+	parkedAt time.Time   // when the current signal was parked; bounds its age
+	timer    *time.Timer // pending retry, nil when none is scheduled
+}
+
+// deliverSignal sends signal to ref now. attempts counts earlier failed
+// deliveries of this signal. If the peer cannot be reached the signal is
+// parked (replacing any earlier one) and retried on a backoff timer and on
+// the next warm success; a 404 marks the peer as predating signals for
+// peerMessageSignalUnsupportedTTL.
+func (m *activePeerManager) deliverSignal(ref string, signal PeerMessageSignal, attempts int) {
 	ref = normalizePeerRef(ref)
 	m.mu.Lock()
-	unsupported := m.signalUnsupported[ref]
+	until, marked := m.signalUnsupported[ref]
+	if marked && time.Now().After(until) {
+		delete(m.signalUnsupported, ref)
+		marked = false
+	}
 	m.mu.Unlock()
-	if unsupported {
+	if marked {
+		m.b.logf("[v1] peermessage_signal: ref=%q skipped %s; peer marked unsupported until %v", ref, signal.Type, until.Format(time.RFC3339))
 		return
 	}
+
+	// Control says the peer is offline: park without spending a dial.
+	if nm := m.b.NetMap(); nm != nil {
+		if peer, err := resolvePeerByRef(nm, ref); err == nil {
+			if online := peer.Online(); online.Valid() && !online.Get() {
+				m.parkSignal(ref, signal, attempts, errors.New("peer offline"))
+				return
+			}
+		}
+	}
+
 	err := m.b.sendPeerMessageSignal(context.Background(), ref, signal)
 	switch {
 	case err == nil:
 		m.b.logf("[v1] peermessage_signal: ref=%q sent %s", ref, signal.Type)
 	case errors.Is(err, errPeerMessageSignalUnsupported):
+		until := time.Now().Add(peerMessageSignalUnsupportedTTL)
 		m.mu.Lock()
 		if m.signalUnsupported == nil {
-			m.signalUnsupported = map[string]bool{}
+			m.signalUnsupported = map[string]time.Time{}
 		}
-		m.signalUnsupported[ref] = true
+		m.signalUnsupported[ref] = until
 		m.mu.Unlock()
-		m.b.logf("peermessage_signal: ref=%q does not support signals; skipping for this session", ref)
+		m.b.logf("peermessage_signal: ref=%q does not support signals; retrying after %v", ref, peerMessageSignalUnsupportedTTL)
 	default:
-		m.mu.Lock()
-		if m.pendingSignals == nil {
-			m.pendingSignals = map[string]PeerMessageSignal{}
-		}
-		m.pendingSignals[ref] = signal
-		m.mu.Unlock()
-		m.b.logf("[v1] peermessage_signal: ref=%q parked %s until reachable: %v", ref, signal.Type, err)
+		m.parkSignal(ref, signal, attempts, err)
 	}
+}
+
+// parkSignal keeps signal for redelivery to ref, replacing any earlier
+// parked signal, and makes sure a retry is scheduled.
+func (m *activePeerManager) parkSignal(ref string, signal PeerMessageSignal, attempts int, cause error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingSignals == nil {
+		m.pendingSignals = map[string]*parkedSignal{}
+	}
+	p := m.pendingSignals[ref]
+	if p == nil {
+		p = &parkedSignal{parkedAt: time.Now()}
+		m.pendingSignals[ref] = p
+	} else if p.signal != signal {
+		// Newer state supersedes the parked one; its age starts over.
+		p.parkedAt = time.Now()
+	}
+	p.signal = signal
+	p.attempts = attempts + 1
+	if time.Since(p.parkedAt) > peerMessageSignalMaxAge {
+		delete(m.pendingSignals, ref)
+		if p.timer != nil {
+			p.timer.Stop()
+		}
+		m.b.logf("peermessage_signal: ref=%q giving up on %s after %v: %v", ref, signal.Type, peerMessageSignalMaxAge, cause)
+		return
+	}
+	if p.timer != nil {
+		return // a retry is already scheduled
+	}
+	delay := nextSignalRetryDelay(p.attempts)
+	p.timer = time.AfterFunc(delay, func() { m.retryParkedSignal(ref) })
+	m.b.logf("peermessage_signal: ref=%q parked %s (attempt %d): %v; retrying in %v", ref, signal.Type, p.attempts, cause, delay)
+}
+
+// retryParkedSignal is the retry timer's callback.
+func (m *activePeerManager) retryParkedSignal(ref string) {
+	m.mu.Lock()
+	p := m.pendingSignals[ref]
+	if p == nil {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.pendingSignals, ref)
+	p.timer = nil
+	m.mu.Unlock()
+	m.deliverSignal(ref, p.signal, p.attempts)
 }
 
 // transitionStatus pushes an intermediate status (e.g. "warming") only if it

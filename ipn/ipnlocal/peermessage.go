@@ -74,8 +74,24 @@ type PeerMessageSendResult struct {
 // outside the persisted message queue: never stored on disk, never retried
 // behind messages. Today only read receipts use them.
 const (
-	peerMessageSignalPath    = "/v0/peer-message/signal"
-	peerMessageSignalTimeout = 5 * time.Second
+	peerMessageSignalPath = "/v0/peer-message/signal"
+	// peerMessageSignalTimeout matches the message send timeout: the first
+	// contact over a cold relay path can take longer than a few seconds, and
+	// the send runs in the background so the wait costs callers nothing.
+	peerMessageSignalTimeout = 15 * time.Second
+	// A signal that could not be delivered is parked and retried on this
+	// schedule (doubling from the base, capped), independent of the warm
+	// loop, so a receipt parked while the thread was open still goes out
+	// after the thread closes. Parked signals older than the max age are
+	// dropped: a receipt a day late is worth nothing.
+	peerMessageSignalRetryBase = 15 * time.Second
+	peerMessageSignalMaxRetry  = 5 * time.Minute
+	peerMessageSignalMaxAge    = 24 * time.Hour
+	// A peer that answers 404 predates signals. Remember that for a while
+	// rather than for the session: peers upgrade at different times, and a
+	// mark held for days on a long-lived daemon silently dropped every
+	// receipt to a phone that had since been updated.
+	peerMessageSignalUnsupportedTTL = 2 * time.Hour
 
 	PeerMessageSignalTypeRead = "read"
 )
@@ -850,10 +866,11 @@ func peerMessageReadEvent(profileID string, peer tailcfg.NodeView, signal PeerMe
 
 // SendPeerMessageReadReceipt tells receipt.PeerRef that we have read its
 // messages up to receipt.UpToMessageID. It returns once the receipt is
-// accepted: the send runs in the background with a short timeout and is never
-// queued behind messages. An unreachable peer parks the receipt (latest wins,
-// one per peer) until the warm loop next reaches it; a peer that answers 404
-// predates signals and is skipped for the rest of the session.
+// accepted: the send runs in the background with a bounded timeout and is
+// never queued behind messages. An unreachable peer parks the receipt (latest
+// wins, one per peer), retried on a backoff timer and immediately when the
+// warm loop next reaches the peer; a peer that answers 404 predates signals
+// and is skipped for peerMessageSignalUnsupportedTTL.
 func (b *LocalBackend) SendPeerMessageReadReceipt(receipt PeerMessageReadReceipt) error {
 	peerRef := strings.TrimSpace(receipt.PeerRef)
 	if peerRef == "" {
@@ -869,8 +886,25 @@ func (b *LocalBackend) SendPeerMessageReadReceipt(receipt PeerMessageReadReceipt
 		At:             time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	m := b.activePeerManager()
-	b.goTracker.Go(func() { m.deliverSignal(peerRef, signal) })
+	b.goTracker.Go(func() { m.deliverSignal(peerRef, signal, 0) })
 	return nil
+}
+
+// nextSignalRetryDelay is the wait before retrying a parked signal after
+// attempts failed deliveries: 15s, 30s, 1m, 2m, 4m, then 5m.
+func nextSignalRetryDelay(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	shift := uint(attempts - 1)
+	if shift >= 5 {
+		return peerMessageSignalMaxRetry
+	}
+	d := peerMessageSignalRetryBase << shift
+	if d > peerMessageSignalMaxRetry {
+		return peerMessageSignalMaxRetry
+	}
+	return d
 }
 
 // sendPeerMessageSignal posts one signal to the peer. It reports
