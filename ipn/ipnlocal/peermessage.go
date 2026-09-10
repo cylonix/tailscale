@@ -562,7 +562,7 @@ func (b *LocalBackend) emitPeerMessageDeliveryUpdate(payload PeerMessageTranspor
 		return PeerMessageEventSink(event)
 	}
 	// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
-	b.send(ipn.Notify{PeerMessageEvent: event})
+	b.broadcastPeerMessageEvent(event)
 	return nil
 }
 
@@ -789,7 +789,7 @@ func handlePeerMessage(ph PeerAPIHandler, w http.ResponseWriter, r *http.Request
 		}
 	} else {
 		// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
-		ph.LocalBackend().send(ipn.Notify{PeerMessageEvent: event})
+		ph.LocalBackend().broadcastPeerMessageEvent(event)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -828,7 +828,7 @@ func handlePeerMessageSignal(ph PeerAPIHandler, w http.ResponseWriter, r *http.R
 			}
 		} else {
 			// No event sink registered (daemon mode) — broadcast via watch-ipn-bus
-			b.send(ipn.Notify{PeerMessageEvent: event})
+			b.broadcastPeerMessageEvent(event)
 		}
 	default:
 		http.Error(w, "unknown signal type", http.StatusBadRequest)
