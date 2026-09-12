@@ -28,6 +28,17 @@ func shouldRebind(err error) (ok bool, reason string) {
 	// rights associated with a new socket.
 	case errors.Is(err, syscall.EPERM):
 		return true, "operation-not-permitted"
+
+	// __BEGIN_CYLONIX_ADD__
+	// On mobile the socket is bound to an interface index; when that
+	// interface goes down or loses the address the socket was using, sends
+	// fail with ENETDOWN / EADDRNOTAVAIL even though the path may already
+	// look healthy again. Only a rebind fixes it.
+	case errors.Is(err, syscall.ENETDOWN):
+		return true, "network-down"
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return true, "address-not-available"
+		// __END_CYLONIX_ADD__
 	}
 	return false, ""
 }

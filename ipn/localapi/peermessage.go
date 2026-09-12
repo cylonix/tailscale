@@ -4,7 +4,10 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +21,53 @@ func init() {
 	Register("peer-message/active-peers-stream", (*Handler).servePeerMessageActivePeersStream)
 	Register("peer-message/active-peers", (*Handler).servePeerMessageActivePeers)
 	Register("peer-message/mark-read", (*Handler).servePeerMessageMarkRead)
+	Register("peer-debug/pprof", (*Handler).servePeerDebugPprof)
+}
+
+// servePeerDebugPprof fetches a Go runtime profile from another of the
+// user's devices through this daemon's PeerAPI transport and streams it
+// back. Query: peer=<stable id, name, or IP>, name=<heap|allocs|goroutine|
+// ...>, debug=<0|1>. The transport matters: a plain TCP connection to a
+// phone's PeerAPI port is refused by iOS, while the daemon's dialer reaches
+// it, as the peer-message signal path shows.
+func (h *Handler) servePeerDebugPprof(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.GET {
+		http.Error(w, "want GET", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	peerRef := strings.TrimSpace(q.Get("peer"))
+	if peerRef == "" {
+		http.Error(w, "missing peer", http.StatusBadRequest)
+		return
+	}
+	name := q.Get("name")
+	if name == "" {
+		name = "heap"
+	}
+	debug := q.Get("debug")
+	if debug == "" {
+		debug = "0"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	resp, err := h.b.FetchPeerDebugPprof(ctx, peerRef, name, debug)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		http.Error(w, fmt.Sprintf("peer answered %d: %s", resp.StatusCode, strings.TrimSpace(string(body))), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	io.Copy(w, resp.Body)
 }
 
 // servePeerMessageMarkRead asks the daemon to send a read receipt to a peer.

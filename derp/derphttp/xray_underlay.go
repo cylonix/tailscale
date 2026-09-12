@@ -41,8 +41,10 @@ import (
 	// Fix dependency cycle caused by core import in internet package.
 	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
 
+	"github.com/xtls/xray-core/transport/internet/splithttp"
 	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
+	_ "unsafe" // go:linkname below
 )
 
 // WantsXRayUnderlay reports whether a DERP node is configured to use an
@@ -176,6 +178,7 @@ func (xi *xrayInstance) getOrCreate(configKey string, configBytes []byte) (*core
 		xi.instance.Close()
 		xi.instance = nil
 		xi.configKey = ""
+		purgeSplitHTTPDialerCache()
 	}
 	inst, err := core.StartInstance("protobuf", configBytes)
 	if err != nil {
@@ -193,7 +196,59 @@ func (xi *xrayInstance) close() {
 		xi.instance.Close()
 		xi.instance = nil
 		xi.configKey = ""
+		purgeSplitHTTPDialerCache()
 	}
+}
+
+// xray-core's splithttp (XHTTP) transport caches one XmuxManager per
+// (destination, *MemoryStreamConfig) in a package-global map that nothing
+// prunes. The config pointer is allocated per core.Instance, so every
+// instance recreated after a transport hiccup adds a new entry and strands
+// the previous manager together with its HTTP/2 clients, REALITY/uTLS
+// handshake state, and buffers. A heap profile of the iOS extension showed
+// that state as the largest and growing owner of live memory. Exactly one
+// instance runs at a time, so dropping the whole cache when ours closes is
+// correct: the next instance rebuilds what it needs.
+//
+// The map and its mutex are reached by linkname because the package does
+// not export them. Only len and clear are used, which do not depend on the
+// key's hash function, so the mirrored key type only has to match in layout.
+
+//go:linkname splithttpGlobalDialerMap github.com/xtls/xray-core/transport/internet/splithttp.globalDialerMap
+var splithttpGlobalDialerMap map[splithttpDialerConf]*splithttp.XmuxManager
+
+//go:linkname splithttpGlobalDialerAccess github.com/xtls/xray-core/transport/internet/splithttp.globalDialerAccess
+var splithttpGlobalDialerAccess sync.Mutex
+
+// splithttpDialerConf mirrors splithttp.dialerConf field for field.
+type splithttpDialerConf struct {
+	xnet.Destination
+	*internet.MemoryStreamConfig
+}
+
+// xrayPurges counts instance resets that purged the cache, and
+// xrayEntriesPurged the entries dropped: the managers that would otherwise
+// have been stranded. Exposed through XRayDialerCachePurges for the
+// peer-debug footprint report, so a memory investigation can see how many
+// resets a run absorbed without pulling device logs.
+var xrayPurges, xrayEntriesPurged atomic.Uint64
+
+// XRayDialerCachePurges reports how many xray instance resets purged the
+// splithttp dialer cache and how many entries were dropped in total.
+func XRayDialerCachePurges() (purges, entries uint64) {
+	return xrayPurges.Load(), xrayEntriesPurged.Load()
+}
+
+// purgeSplitHTTPDialerCache empties the cache and returns how many entries
+// it held.
+func purgeSplitHTTPDialerCache() int {
+	splithttpGlobalDialerAccess.Lock()
+	defer splithttpGlobalDialerAccess.Unlock()
+	n := len(splithttpGlobalDialerMap)
+	clear(splithttpGlobalDialerMap)
+	xrayPurges.Add(1)
+	xrayEntriesPurged.Add(uint64(n))
+	return n
 }
 
 // dialNodeXRay dials a DERP node through an xray-core VLESS+REALITY+XHTTP

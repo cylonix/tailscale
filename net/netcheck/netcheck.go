@@ -247,6 +247,20 @@ type Client struct {
 	// holding the main lock during slow xray dial operations.
 	xrayProbeMu      sync.Mutex
 	xrayProbeClients map[int]*derphttp.Client // one cached derphttp.Client per xray region ID
+	// __BEGIN_CYLONIX_ADD__
+	// xrayLatencyCache holds the last successful HTTPS latency sample per
+	// xray region. An xray region cannot answer STUN (its STUN port is
+	// behind the REALITY decoy), so netcheck falls back to an HTTPS probe
+	// that opens a stream over the xray tunnel on every ~20s report. That
+	// probe rarely changes anything — xray latency is stable and, with one
+	// xray region, it is home regardless of the number — yet it costs a
+	// tunnel round trip and burns the xray mux's request budget. Serve a
+	// cached sample for xrayLatencyCacheTTL so the periodic report stops
+	// re-dialing; liveness is covered by the DERP keepalive watchdog, not by
+	// this probe. Guarded by xrayProbeMu. This is an interim measure until
+	// the tiered DERP selection lands (docs/todo-derp-tiered-xray-selection.md).
+	xrayLatencyCache map[int]xrayLatencySample // keyed by xray region ID
+	// __END_CYLONIX_ADD__
 	// __END_CYLONIX_ADD__
 }
 
@@ -1226,6 +1240,42 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
 	return nil
 }
 
+// __BEGIN_CYLONIX_ADD__
+// xrayLatencySample is a cached HTTPS latency measurement for an xray region.
+type xrayLatencySample struct {
+	at time.Time
+	d  time.Duration
+	ip netip.Addr
+}
+
+// xrayLatencyCacheTTL is how long a cached xray HTTPS latency sample is
+// reused before the region is probed again. Long enough to collapse the
+// ~20s periodic report cadence to a rare refresh, short enough that a real
+// latency shift is picked up within minutes.
+const xrayLatencyCacheTTL = 15 * time.Minute
+
+var metricXRayLatencyCacheHit = clientmetric.NewCounter("cylonix_xray_latency_cache_hit")
+
+// cachedXRayLatency returns a fresh cached sample for regionID, if any.
+func (c *Client) cachedXRayLatency(regionID int) (xrayLatencySample, bool) {
+	c.xrayProbeMu.Lock()
+	defer c.xrayProbeMu.Unlock()
+	s, ok := c.xrayLatencyCache[regionID]
+	if !ok || c.timeNow().Sub(s.at) >= xrayLatencyCacheTTL {
+		return xrayLatencySample{}, false
+	}
+	return s, true
+}
+
+// storeXRayLatency records a successful xray latency sample for regionID.
+func (c *Client) storeXRayLatency(regionID int, d time.Duration, ip netip.Addr) {
+	c.xrayProbeMu.Lock()
+	defer c.xrayProbeMu.Unlock()
+	mak.Set(&c.xrayLatencyCache, regionID, xrayLatencySample{at: c.timeNow(), d: d, ip: ip})
+}
+
+// __END_CYLONIX_ADD__
+
 // measureHTTPSLatency measures HTTP request latency to the DERP region, but
 // only returns success if an HTTPS request to the region succeeds.
 // For nodes using an xray underlay, the tunnel already provides transport
@@ -1244,6 +1294,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	}
 
 	if isXRay {
+		if s, ok := c.cachedXRayLatency(reg.RegionID); ok {
+			metricXRayLatencyCacheHit.Add(1)
+			c.logf("[v2] netcheck: xray: region %d serving cached latency %v (age %v), skipping probe", reg.RegionID, s.d.Round(time.Millisecond), c.timeNow().Sub(s.at).Round(time.Second))
+			return s.d, s.ip, nil
+		}
 		remaining := "none"
 		if dl, ok := ctx.Deadline(); ok {
 			remaining = time.Until(dl).Round(time.Millisecond).String()
@@ -1414,6 +1469,9 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	// best approximation of the RTT latency to the node. Note that the
 	// connection setup performs happy-eyeballs and TLS so there are additional
 	// overheads.
+	if isXRay {
+		c.storeXRayLatency(reg.RegionID, reqDur, ip) // __CYLONIX_ADD__
+	}
 	return reqDur, ip, nil
 }
 

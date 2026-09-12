@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"sync/atomic"
+	"tailscale.com/util/clientmetric"
 	"time"
 	"unsafe"
 
@@ -589,6 +590,7 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 	// a frame) and under write demand. A region that goes fully unhealthy
 	// is torn down and rebuilt here at a single connection, so a failure
 	// naturally sheds the extra connections.
+	go c.runDerpKeepAliveWatchdog(ctx, regionID, dc, ad.createTime) // __CYLONIX_ADD__
 	if c.regionHasXRayUnderlay(regionID) {
 		if ceiling := c.xrayConnCountForRegion(regionID); ceiling > 1 {
 			go c.runXRayConnRamp(ctx, regionID, ceiling, ad.createTime)
@@ -1140,15 +1142,31 @@ func (c *Conn) maybeCloseDERPsOnRebind(okayLocalIPs []netip.Prefix) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for regionID, ad := range c.activeDerp {
-		la, err := ad.c.LocalAddr()
-		if err != nil {
+		// __BEGIN_CYLONIX_MOD__
+		// A DERP connection carried inside the xray underlay has no
+		// meaningful LocalAddr (it is a pipe), so the LocalAddr check closed
+		// it on every rebind, including the many where nothing underneath
+		// changed. Judge it by the interface addresses it was dialed over:
+		// still current → keep it and ping like a healthy connection; moved →
+		// reconnect, which is the intended "re-DERP when the underlying socket
+		// moved". Plain connections keep the LocalAddr check.
+		if ips, tunneled := ad.c.UnderlayIPs(); tunneled {
+			if len(ips) > 0 && !underlayStillCurrent(ips, okayLocalIPs) {
+				metricDERPRebindClose.Add(1)
+				c.closeOrReconnectDERPLocked(regionID, "rebind-underlay-if-change")
+				continue
+			}
+		} else if la, err := ad.c.LocalAddr(); err != nil {
+			metricDERPRebindClose.Add(1)
 			c.closeOrReconnectDERPLocked(regionID, "rebind-no-localaddr")
 			continue
-		}
-		if !tsaddr.PrefixesContainsIP(okayLocalIPs, la.Addr()) {
+		} else if !tsaddr.PrefixesContainsIP(okayLocalIPs, la.Addr()) {
+			metricDERPRebindClose.Add(1)
 			c.closeOrReconnectDERPLocked(regionID, "rebind-default-route-change")
 			continue
 		}
+		metricDERPRebindKeep.Add(1)
+		// __END_CYLONIX_MOD__
 		dc := ad.c
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1164,6 +1182,101 @@ func (c *Conn) maybeCloseDERPsOnRebind(okayLocalIPs []netip.Prefix) {
 	}
 	c.logActiveDerpLocked()
 }
+
+// __BEGIN_CYLONIX_ADD__
+const (
+	// derpKeepAliveCheckInterval is how often the watchdog looks at a
+	// region's last received frame.
+	derpKeepAliveCheckInterval = 30 * time.Second
+	// derpKeepAliveTimeout is how long a connection may go without any
+	// frame (the server sends a keepalive every derp.KeepAlive) before the
+	// watchdog pings it. A stream carried inside the xray underlay can die
+	// without ever returning an error (the phone's Wi-Fi flapping killed
+	// one at 02:39 on 2026-09-11 and nothing noticed for 20+ minutes once
+	// path updates stopped driving rebinds), so liveness must be checked
+	// on a timer, independent of path changes.
+	derpKeepAliveTimeout = 150 * time.Second
+	// derpKeepAlivePingTimeout bounds the liveness ping.
+	derpKeepAlivePingTimeout = 5 * time.Second
+)
+
+var metricDERPKeepAliveReconnect = clientmetric.NewCounter("cylonix_derp_keepalive_reconnect")
+
+// runDerpKeepAliveWatchdog pings the region's connection when no frame has
+// been received for derpKeepAliveTimeout and reconnects it if the ping
+// fails. It exits when ctx (the region's context) is cancelled. gen is the
+// region generation the watchdog belongs to, so it never acts on a newer
+// connection.
+func (c *Conn) runDerpKeepAliveWatchdog(ctx context.Context, regionID int, dc *derphttp.Client, gen time.Time) {
+	ticker := time.NewTicker(derpKeepAliveCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		now := time.Now()
+		lastRecv := c.health.GetDERPRegionReceivedTime(regionID)
+		if lastRecv.IsZero() {
+			// Nothing received yet: give the connection the full timeout
+			// from creation before treating silence as death.
+			lastRecv = gen
+		}
+		if now.Sub(lastRecv) < derpKeepAliveTimeout {
+			continue
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, derpKeepAlivePingTimeout)
+		err := dc.Ping(pingCtx)
+		cancel()
+		if err == nil {
+			c.logf("magicsock: derp-%d: keepalive watchdog ping okay after %v of silence", regionID, now.Sub(lastRecv).Round(time.Second))
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		c.mu.Lock()
+		if ad, ok := c.activeDerp[regionID]; ok && ad.createTime.Equal(gen) {
+			metricDERPKeepAliveReconnect.Add(1)
+			c.logf("magicsock: derp-%d: no frame for %v and ping failed (%v); reconnecting", regionID, now.Sub(lastRecv).Round(time.Second), err)
+			c.closeOrReconnectDERPLocked(regionID, "keepalive-timeout")
+		}
+		c.mu.Unlock()
+		return
+	}
+}
+
+var (
+	// metricDERPRebindClose counts DERP connections closed by a rebind and
+	// metricDERPRebindKeep those kept (and pinged) because their path did not
+	// move. Watch the ratio over the tunnel via peer-debug name=footprint.
+	metricDERPRebindClose = clientmetric.NewCounter("cylonix_derp_rebind_close")
+	metricDERPRebindKeep  = clientmetric.NewCounter("cylonix_derp_rebind_keep")
+)
+
+// underlayStillCurrent reports whether every address a tunneled DERP
+// connection was dialed over is still assigned to the default interface,
+// i.e. the underlay socket is still on a live path. Addresses are compared
+// exactly, not by prefix containment: a renumbering within the same subnet
+// still invalidates the socket's binding.
+func underlayStillCurrent(dialedOver, okayLocalIPs []netip.Prefix) bool {
+	for _, p := range dialedOver {
+		found := false
+		for _, q := range okayLocalIPs {
+			if q.Addr() == p.Addr() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// __END_CYLONIX_ADD__
 
 // closeOrReconnectDERPLocked closes the DERP connection to the
 // provided regionID and starts reconnecting it if it's our current

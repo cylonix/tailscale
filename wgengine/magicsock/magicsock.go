@@ -1530,6 +1530,37 @@ func (c *Conn) sendUDP(ipp netip.AddrPort, b []byte, isDisco bool, isGeneveEncap
 
 // maybeRebindOnError performs a rebind and restun if the error is one that is
 // known to be healed by a rebind, and the rebind is not throttled.
+// __BEGIN_CYLONIX_ADD__
+const (
+	// readErrRebindAfter is how long a receive socket must fail continuously
+	// before rebindOnReadError acts; shorter blips ride out the 250ms retry.
+	readErrRebindAfter = 2 * time.Second
+	// readErrRebindBackoffMin/Max bound the interval between read-error
+	// rebinds while the socket keeps failing (network genuinely down).
+	readErrRebindBackoffMin = 5 * time.Second
+	readErrRebindBackoffMax = 60 * time.Second
+)
+
+var metricRebindReadError = clientmetric.NewCounter("cylonix_rebind_read_error")
+
+// rebindOnReadError is the receive-side counterpart of maybeRebindOnError:
+// a UDP socket whose reads keep failing is rebound (and STUN re-run) without
+// waiting for a path change, since on mobile the path can look unchanged
+// while the bound socket is dead. Shares the send side's 5s throttle.
+func (c *Conn) rebindOnReadError(sock string, err error) {
+	if !c.lastErrRebind.Load().Before(time.Now().Add(-5 * time.Second)) {
+		c.logf("magicsock: not performing %s read-error rebind due to throttle", sock)
+		return
+	}
+	c.lastErrRebind.Store(time.Now())
+	metricRebindReadError.Add(1)
+	c.logf("magicsock: performing rebind due to %s read error: %v", sock, err)
+	c.Rebind()
+	go c.ReSTUN("read-error")
+}
+
+// __END_CYLONIX_ADD__
+
 func (c *Conn) maybeRebindOnError(err error) {
 	ok, reason := shouldRebind(err)
 	if !ok {
@@ -1692,6 +1723,16 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 		healthName = healthItem.Name()
 	}
 	var lastReadErrLog time.Time
+	// __BEGIN_CYLONIX_ADD__
+	// Read errors that persist trigger an error-driven rebind (see
+	// rebindOnReadError), with a backoff so a network that is simply down
+	// does not rebind every throttle interval.
+	var (
+		firstReadErr      time.Time
+		nextReadErrRebind time.Time
+		readErrBackoff    = readErrRebindBackoffMin
+	)
+	// __END_CYLONIX_ADD__
 	// __END_CYLONIX_ADD__
 
 	return func(buffs [][]byte, sizes []int, eps []conn.Endpoint) (_ int, retErr error) {
@@ -1738,9 +1779,22 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 				if c.closing.Load() || errors.Is(err, net.ErrClosed) {
 					return 0, err
 				}
-				if now := time.Now(); now.Sub(lastReadErrLog) > 5*time.Second {
+				now := time.Now()
+				if now.Sub(lastReadErrLog) > 5*time.Second {
 					lastReadErrLog = now
 					c.logf("magicsock: %s read error; awaiting rebind: %v", healthName, err)
+				}
+				// A socket that keeps failing while the path looks unchanged
+				// (same interface, same addresses) is only detectable here, so
+				// after readErrRebindAfter of consecutive errors perform the
+				// rebind ourselves instead of waiting for a path change.
+				if firstReadErr.IsZero() {
+					firstReadErr = now
+				}
+				if now.Sub(firstReadErr) >= readErrRebindAfter && !now.Before(nextReadErrRebind) {
+					nextReadErrRebind = now.Add(readErrBackoff)
+					readErrBackoff = min(readErrBackoff*2, readErrRebindBackoffMax)
+					c.rebindOnReadError(healthName, err)
 				}
 				select {
 				case <-c.donec:
@@ -1751,6 +1805,13 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 				// __END_CYLONIX_MOD__
 			}
 
+			// __BEGIN_CYLONIX_ADD__
+			if !firstReadErr.IsZero() {
+				firstReadErr = time.Time{}
+				nextReadErrRebind = time.Time{}
+				readErrBackoff = readErrRebindBackoffMin
+			}
+			// __END_CYLONIX_ADD__
 			reportToCaller := false
 			for i, msg := range batch.msgs[:numMsgs] {
 				if msg.N == 0 {

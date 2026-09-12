@@ -112,6 +112,16 @@ type ConnectedState struct {
 	Connecting bool
 	Closed     bool
 	LocalAddr  netip.AddrPort // if Connected
+	// __BEGIN_CYLONIX_ADD__
+	// UnderlayIPs are the default-interface addresses the connection was
+	// dialed over, and Tunneled reports that it runs inside the xray
+	// underlay. A tunneled connection's LocalAddr is a pipe, so magicsock
+	// judges it by UnderlayIPs on rebind instead: still current → keep and
+	// ping; moved → reconnect, because the underlay socket is bound to the
+	// old interface.
+	UnderlayIPs []netip.Prefix
+	Tunneled    bool
+	// __END_CYLONIX_ADD__
 }
 
 func (c *Client) String() string {
@@ -655,12 +665,34 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	c.connGen++
 
 	localAddr, _ := c.client.LocalAddr()
+	// __BEGIN_CYLONIX_ADD__
+	var underlay []netip.Prefix
+	if st := c.netMon.InterfaceState(); st != nil {
+		underlay = st.InterfaceIPs[st.DefaultRouteInterface]
+	}
+	// __END_CYLONIX_ADD__
 	c.atomicState.Store(ConnectedState{
-		Connected: true,
-		LocalAddr: localAddr,
+		Connected:   true,
+		LocalAddr:   localAddr,
+		UnderlayIPs: underlay, // __CYLONIX_ADD__
+		Tunneled:    isXRay,   // __CYLONIX_ADD__
 	})
 	return c.client, c.connGen, nil
 }
+
+// __BEGIN_CYLONIX_ADD__
+// UnderlayIPs reports the default-interface addresses the current connection
+// was dialed over and whether it runs inside the xray underlay. See
+// ConnectedState.UnderlayIPs.
+func (c *Client) UnderlayIPs() (ips []netip.Prefix, tunneled bool) {
+	st := c.atomicState.Load()
+	if !st.Connected {
+		return nil, false
+	}
+	return st.UnderlayIPs, st.Tunneled
+}
+
+// __END_CYLONIX_ADD__
 
 // SetURLDialer sets the dialer to use for dialing URLs.
 // This dialer is only use for clients created with NewClient, not NewRegionClient.
