@@ -2012,8 +2012,10 @@ func (h *Handler) serveL2RelayCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.b.SetL2RelayCaptureEnabled(enabled)
+	// Report the effective state: with the relay manager disabled the request
+	// is a no-op and callers must not believe capture is on.
 	_ = json.NewEncoder(w).Encode(map[string]bool{
-		"enabled": enabled,
+		"enabled": h.b.L2RelayCaptureEnabled(),
 	})
 }
 

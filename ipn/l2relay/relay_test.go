@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"tailscale.com/envknob"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
@@ -19,6 +21,14 @@ import (
 	"tailscale.com/types/ptr"
 	"tailscale.com/wgengine/filter"
 )
+
+// TestMain opts this package's tests back into the relay: the manager is
+// default-off in production builds and only constructed when
+// TS_DEBUG_L2RELAY_ENABLED=true.
+func TestMain(m *testing.M) {
+	envknob.Setenv("TS_DEBUG_L2RELAY_ENABLED", "true")
+	os.Exit(m.Run())
+}
 
 type testBackend struct {
 	nm *netmap.NetworkMap

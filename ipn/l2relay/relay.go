@@ -231,11 +231,15 @@ var (
 	debugL2RelayVerbose = envknob.RegisterBoolWithLookUpPerCall("TS_DEBUG_L2RELAY_VERBOSE")
 )
 
+// debugL2RelayEnabled reports whether the relay manager is constructed at all.
+// Default-off since 2026-09-15: the design review found no important use case,
+// so shipping builds construct no manager, register no netmon callback and run
+// no hello ticker. Set TS_DEBUG_L2RELAY_ENABLED=true to bring it back for tests.
 func debugL2RelayEnabled() bool {
 	if v, ok := debugL2RelayEnabledOpt().Get(); ok {
 		return v
 	}
-	return true
+	return false
 }
 
 func newL2RelayManager(b Backend) *l2RelayManager {
